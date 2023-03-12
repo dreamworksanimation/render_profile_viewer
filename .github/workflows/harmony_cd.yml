@@ -1,0 +1,23 @@
+name: Harmony Pipeline CD Trigger
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - '.github/**'
+      - 'LICENSE'
+      - 'pull_request_template.md'
+      - 'tsc/**'
+
+jobs:
+  trigger_pipeline:
+    runs-on: [self-hosted, rez]
+    steps:
+      - name: Launch Action
+        uses: CM/cm-actions/pipeline_trigger@main
+        with:
+          pipe_config: 'release'
+          rez_config: 'rez-2'

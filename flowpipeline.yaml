@@ -1,0 +1,12 @@
+syntax: 1
+# See CM-15757 & PR #78 for why these are set to false.
+pipeline-configurations:
+  continuous-integration:
+    test:
+      enabled: false
+  pre-release:
+    test:
+      enabled: false
+  release:
+    test:
+      enabled: false

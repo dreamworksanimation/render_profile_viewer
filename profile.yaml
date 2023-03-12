@@ -1,0 +1,7 @@
+output-format: json
+
+inherits:
+  - prospector.yaml
+
+2to3:
+  run: true

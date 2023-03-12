@@ -1,0 +1,20 @@
+output-format: grouped
+
+strictness: veryhigh
+
+ignore-paths:
+  - build
+  - docs
+  - package.py
+  - package.yaml
+  - setup.py
+  - test
+  - _version.py
+
+pep8:
+  options:
+    max-line-length: 80
+
+pylint:
+  disable:
+    -C0325  # Unnecessary parens after '%s' keyword

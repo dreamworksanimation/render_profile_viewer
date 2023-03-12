@@ -1,0 +1,37 @@
+#
+# For a good template, see https://github.com/github/gitignore/blob/master/Python.gitignore
+#
+
+# Generated & compiled files
+*.py[cod]
+MANIFEST
+_version.py
+
+# C extensions
+*.so
+*.o
+
+# Packages
+*.egg*
+*.egg-info
+build
+dist
+
+# Unit test / coverage reports
+.coverage
+.tox
+.cache
+
+# Editors
+*~
+*#
+.#*
+.doctrees
+.project
+.settings
+.idea*
+
+# Sphynx doc detritus
+_build
+_themes
+
