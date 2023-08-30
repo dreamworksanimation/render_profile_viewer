@@ -430,9 +430,8 @@ class RenderProfileChartView(QtChart.QChartView):
 
         categories = list()
         for stat_name in stat_names:
-            if stat_visibility_list:
-                if not show_pixel_samples and stat_name not in stat_visibility_list:
-                    continue
+           if not stat_visibility_list or (not show_pixel_samples and stat_name not in stat_visibility_list):
+                continue
 
             main_bar_set = QtChart.QBarSet(stat_name)
             if stat_name in self.stat_colors:
