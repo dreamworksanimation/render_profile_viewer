@@ -1,4 +1,4 @@
-# Copyright 2023 DreamWorks Animation LLC
+# Copyright 2023-2024 DreamWorks Animation LLC
 # SPDX-License-Identifier: Apache-2.0
 
 uuid = "73528efd-c17e-40b7-aaf0-6b4e31358c55"

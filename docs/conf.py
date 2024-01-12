@@ -1,3 +1,6 @@
+# Copyright 2024 DreamWorks Animation LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # -*- coding: utf-8 -*-
 #
 # render_profile_viewer documentation build configuration file.

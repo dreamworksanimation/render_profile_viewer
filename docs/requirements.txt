@@ -1,3 +1,6 @@
+# Copyright 2024 DreamWorks Animation LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # Use the studio PyPI server by default.
 --index-url http://pypi.anim.dreamworks.com:8080/simple
 --trusted-host pypi.anim.dreamworks.com
