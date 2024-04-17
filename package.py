@@ -1,6 +1,8 @@
 # Copyright 2023-2024 DreamWorks Animation LLC
 # SPDX-License-Identifier: Apache-2.0
 
+import sys
+
 uuid = "73528efd-c17e-40b7-aaf0-6b4e31358c55"
 name = "render_profile_viewer"  # This must match the value in setup.cfg.
 requires_rez_version = "2"
@@ -16,6 +18,17 @@ authors = [
 rez_build_args = {
     'python-3.7': ['--no-build-sphinx'],
 }
+
+if 'scons' in sys.argv:
+    build_system = 'scons'
+    build_system_pbr = 'bart_scons-10'
+else:
+    build_system = 'cmake'
+    build_system_pbr = 'cmake_modules'
+
+private_build_requires = [
+    build_system_pbr,
+]
 
 def preprocess(this, data):
     from rez.package_py_utils import InvalidPackageError
