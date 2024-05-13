@@ -19,16 +19,13 @@ rez_build_args = {
     'python-3.7': ['--no-build-sphinx'],
 }
 
-if 'scons' in sys.argv:
-    build_system = 'scons'
-    build_system_pbr = 'bart_scons-10'
-else:
+if 'cmake' in sys.argv:
     build_system = 'cmake'
-    build_system_pbr = 'cmake_modules-1.0'
-
-private_build_requires = [
-    build_system_pbr,
-]
+    private_build_requires = [
+        'cmake_modules-1.0'
+    ]
+else:
+    build_system = 'setuptools'
 
 def preprocess(this, data):
     from rez.package_py_utils import InvalidPackageError
