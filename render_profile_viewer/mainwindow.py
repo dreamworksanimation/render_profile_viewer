@@ -93,6 +93,10 @@ class RenderProfileChartView(QtChart.QChartView):
     fallback_color = QtGui.QColor(200, 0, 200)
     crash_color = QtGui.QColor(255, 0, 0)
     missing_color = QtGui.QColor(200, 0, 0)
+    scalar_color = QtGui.QColor(255, 0, 0)
+    vector_color = QtGui.QColor(0, 255, 0)
+    xpu_color = QtGui.QColor(0, 0, 255)
+
 
     memory_stats = ["Geometry memory",
                     "BVH memory",
@@ -176,7 +180,11 @@ class RenderProfileChartView(QtChart.QChartView):
     def hover_bar_series(self, status, index, barset):
         if status:
             host_name = barset.property('host_name')
-            pixel_samples = barset.property('pixel_samples')
+
+            pixel_samples = 0.0
+            pixel_samples_list = barset.property('pixel_samples')
+            if pixel_samples_list and index < (len(pixel_samples_list) - 1):
+                pixel_samples = pixel_samples_list[index]
 
             visible_time = 0.0
             visible_time_list = barset.property('visible_time')
@@ -205,7 +213,7 @@ class RenderProfileChartView(QtChart.QChartView):
                                   f"total render prep time={total_render_prep_time}    "
                                   f"total MCRT time={total_mcrt_time}    "
                                   f"total time={total_time}    "
-                                  f"test pixel samples={pixel_samples[index]}    "
+                                  f"test pixel samples={pixel_samples}    "
                                   f"host_name = {host_name[index]}")
         else:
             self.stat_signal.emit("")
@@ -311,27 +319,27 @@ class RenderProfileChartView(QtChart.QChartView):
                 regressions_bar_set.append(0)
         prev_stats_dict[test_type] = stat
 
-    @staticmethod
-    def add_line_series(chart,
+    def add_line_series(self,
+                        chart,
                         x_axis,
                         y_axis,
                         stats_dict,
                         type_visibility_list):
         scalar_pen = QtGui.QPen()
         scalar_pen.setWidth(3)
-        scalar_pen.setColor(QtGui.QColor(255, 0, 0))
+        scalar_pen.setColor(self.scalar_color)
         scalar_line_series = QtChart.QLineSeries()
         scalar_line_series.setPen(scalar_pen)
 
         vector_pen = QtGui.QPen()
         vector_pen.setWidth(3)
-        vector_pen.setColor(QtGui.QColor(0, 255, 0))
+        vector_pen.setColor(self.vector_color)
         vector_line_series = QtChart.QLineSeries()
         vector_line_series.setPen(vector_pen)
 
         xpu_pen = QtGui.QPen()
         xpu_pen.setWidth(3)
-        xpu_pen.setColor(QtGui.QColor(0, 0, 255))
+        xpu_pen.setColor(self.xpu_color)
         xpu_line_series = QtChart.QLineSeries()
         xpu_line_series.setPen(xpu_pen)
 
@@ -433,123 +441,123 @@ class RenderProfileChartView(QtChart.QChartView):
            if not stat_visibility_list or (not show_pixel_samples and stat_name not in stat_visibility_list):
                 continue
 
-            main_bar_set = QtChart.QBarSet(stat_name)
-            if stat_name in self.stat_colors:
-                main_bar_set.setColor(self.stat_colors[stat_name])
+           main_bar_set = QtChart.QBarSet(stat_name)
+           if stat_name in self.stat_colors:
+               main_bar_set.setColor(self.stat_colors[stat_name])
 
-            regressions_bar_set = QtChart.QBarSet(stat_name)
-            if stat_name in self.stat_colors:
-                regressions_bar_set.setColor(self.stat_colors[stat_name])
-            overlay_pen = regressions_bar_set.pen()
-            overlay_pen.setWidth(5)
-            overlay_pen.setColor(self.regression_color)
-            regressions_bar_set.setPen(overlay_pen)
+           regressions_bar_set = QtChart.QBarSet(stat_name)
+           if stat_name in self.stat_colors:
+               regressions_bar_set.setColor(self.stat_colors[stat_name])
+           overlay_pen = regressions_bar_set.pen()
+           overlay_pen.setWidth(5)
+           overlay_pen.setColor(self.regression_color)
+           regressions_bar_set.setPen(overlay_pen)
 
-            improvements_bar_set = QtChart.QBarSet(stat_name)
-            if stat_name in self.stat_colors:
-                improvements_bar_set.setColor(self.stat_colors[stat_name])
-            overlay_pen = improvements_bar_set.pen()
-            overlay_pen.setWidth(5)
-            overlay_pen.setColor(self.improvements_color)
-            improvements_bar_set.setPen(overlay_pen)
+           improvements_bar_set = QtChart.QBarSet(stat_name)
+           if stat_name in self.stat_colors:
+               improvements_bar_set.setColor(self.stat_colors[stat_name])
+           overlay_pen = improvements_bar_set.pen()
+           overlay_pen.setWidth(5)
+           overlay_pen.setColor(self.improvements_color)
+           improvements_bar_set.setPen(overlay_pen)
 
-            fallback_bar_set = QtChart.QBarSet(stat_name)
-            if stat_name in self.stat_colors:
-                fallback_bar_set.setColor(self.stat_colors[stat_name])
-            overlay_pen = fallback_bar_set.pen()
-            overlay_pen.setWidth(5)
-            overlay_pen.setColor(self.fallback_color)
-            fallback_bar_set.setPen(overlay_pen)
+           fallback_bar_set = QtChart.QBarSet(stat_name)
+           if stat_name in self.stat_colors:
+               fallback_bar_set.setColor(self.stat_colors[stat_name])
+           overlay_pen = fallback_bar_set.pen()
+           overlay_pen.setWidth(5)
+           overlay_pen.setColor(self.fallback_color)
+           fallback_bar_set.setPen(overlay_pen)
 
-            crash_bar_set = QtChart.QBarSet(stat_name)
-            if stat_name in self.stat_colors:
-                crash_bar_set.setColor(self.stat_colors[stat_name])
-            overlay_pen = crash_bar_set.pen()
-            overlay_pen.setWidth(5)
-            overlay_pen.setColor(self.crash_color)
-            crash_bar_set.setPen(overlay_pen)
+           crash_bar_set = QtChart.QBarSet(stat_name)
+           if stat_name in self.stat_colors:
+               crash_bar_set.setColor(self.stat_colors[stat_name])
+           overlay_pen = crash_bar_set.pen()
+           overlay_pen.setWidth(5)
+           overlay_pen.setColor(self.crash_color)
+           crash_bar_set.setPen(overlay_pen)
 
-            missing_bar_set = QtChart.QBarSet(stat_name)
-            if stat_name in self.stat_colors:
-                missing_bar_set.setColor(self.stat_colors[stat_name])
+           missing_bar_set = QtChart.QBarSet(stat_name)
+           if stat_name in self.stat_colors:
+               missing_bar_set.setColor(self.stat_colors[stat_name])
 
-            extra_stats_dict = dict()
-            extra_stats_dict['visible_time'] = list()
-            extra_stats_dict['total_render_prep_time'] = list()
-            extra_stats_dict['total_mcrt_time'] = list()
-            extra_stats_dict['pixel_samples'] = list()
-            extra_stats_dict['host_name'] = list()
+           extra_stats_dict = dict()
+           extra_stats_dict['visible_time'] = list()
+           extra_stats_dict['total_render_prep_time'] = list()
+           extra_stats_dict['total_mcrt_time'] = list()
+           extra_stats_dict['pixel_samples'] = list()
+           extra_stats_dict['host_name'] = list()
 
-            prev_stats_dict = dict()
-            prev_stats_dict['scalar'] = 0
-            prev_stats_dict['vector'] = 0
-            prev_stats_dict['xpu'] = 0
+           prev_stats_dict = dict()
+           prev_stats_dict['scalar'] = 0
+           prev_stats_dict['vector'] = 0
+           prev_stats_dict['xpu'] = 0
 
-            for week_index, week in enumerate(stats_dict.keys()):
-                for test_type in ['scalar', 'vector', 'xpu']:
-                    if test_type in stats_dict[week] and test_type in type_visibility_list:
+           for week_index, week in enumerate(stats_dict.keys()):
+               for test_type in ['scalar', 'vector', 'xpu']:
+                   if test_type in stats_dict[week] and test_type in type_visibility_list:
 
-                        if not stats_dict[week][test_type]:
-                            continue
+                       if not stats_dict[week][test_type]:
+                           continue
 
-                        # Check for missing week
-                        missing = False
-                        if stats_dict[week][test_type] == "missing":
-                            missing = True
+                       # Check for missing week
+                       missing = False
+                       if stats_dict[week][test_type] == "missing":
+                           missing = True
 
-                        # Check for host type
-                        if not self.check_host_type(stats_dict, week, test_type, host_visibility_list):
-                            continue
+                       # Check for host type
+                       if not self.check_host_type(stats_dict, week, test_type, host_visibility_list):
+                           continue
 
-                        # Categories (bottom of chart)
-                        if missing:
-                            categories.append(f"MISSING! - {week} ({test_type})")
-                        elif show_host_names:
-                            host_name = 'Unknown'
-                            if 'host_name' in stats_dict[week][test_type]:
-                                host_name = stats_dict[week][test_type]['host_name'].split('.')[0]
-                            if show_fallback and \
-                               'fallback' in stats_dict[week][test_type] and \
-                               'fallback_mode' in stats_dict[week][test_type]:
+                       # Categories (bottom of chart)
+                       if missing:
+                           categories.append(f"MISSING! - {week} ({test_type})")
+                       elif show_host_names:
+                           host_name = 'Unknown'
+                           if 'host_name' in stats_dict[week][test_type]:
+                               host_name = stats_dict[week][test_type]['host_name'].split('.')[0]
+                           if show_fallback and \
+                              'fallback' in stats_dict[week][test_type] and \
+                              'fallback_mode' in stats_dict[week][test_type]:
 
-                                categories.append(f"{host_name}: {week} "
-                                                  f"({test_type} -> {stats_dict[week][test_type]['fallback_mode']})")
-                            else:
-                                categories.append(f"{host_name}: {week} ({test_type})")
-                        else:
-                            if show_fallback and \
-                               'fallback' in stats_dict[week][test_type] and \
-                               'fallback_mode' in stats_dict[week][test_type]:
+                               categories.append(f"{host_name}: {week} "
+                                                 f"({test_type} -> {stats_dict[week][test_type]['fallback_mode']})")
+                           else:
+                               categories.append(f"{host_name}: {week} ({test_type})")
+                       else:
+                           if show_fallback and \
+                              'fallback' in stats_dict[week][test_type] and \
+                              'fallback_mode' in stats_dict[week][test_type]:
 
-                                categories.append(f"{week} "
-                                                  f"({test_type} -> {stats_dict[week][test_type]['fallback_mode']})")
-                            else:
-                                categories.append(f"{week} ({test_type})")
+                               categories.append(f"{week} "
+                                                 f"({test_type} -> {stats_dict[week][test_type]['fallback_mode']})")
+                           else:
+                               categories.append(f"{week} ({test_type})")
 
-                        # Check for fallback
-                        fallback = False
-                        if show_fallback and 'fallback' in stats_dict[week][test_type]:
-                            fallback = stats_dict[week][test_type]['fallback']
+                       # Check for fallback
+                       fallback = False
+                       if show_fallback and 'fallback' in stats_dict[week][test_type]:
+                           fallback = stats_dict[week][test_type]['fallback']
 
-                        # Check for crash
-                        crash = False
-                        if show_crash and 'crash' in stats_dict[week][test_type]:
-                            crash = stats_dict[week][test_type]['crash']
+                       # Check for crash
+                       crash = False
+                       if show_crash and 'crash' in stats_dict[week][test_type]:
+                           crash = stats_dict[week][test_type]['crash']
 
-                        self.process_test_type_for_week(test_type,
-                                                        week, week_index,
-                                                        stat_name, stats_dict, prev_stats_dict, extra_stats_dict,
-                                                        show_regressions, show_improvements,
-                                                        regressions_threshold, improvements_threshold,
-                                                        main_bar_set, regressions_bar_set, improvements_bar_set,
-                                                        fallback_bar_set, fallback,
-                                                        crash_bar_set, crash,
-                                                        missing_bar_set, missing)
+                       self.process_test_type_for_week(test_type,
+                                                       week, week_index,
+                                                       stat_name, stats_dict, prev_stats_dict, extra_stats_dict,
+                                                       show_regressions, show_improvements,
+                                                       regressions_threshold, improvements_threshold,
+                                                       main_bar_set, regressions_bar_set, improvements_bar_set,
+                                                       fallback_bar_set, fallback,
+                                                       crash_bar_set, crash,
+                                                       missing_bar_set, missing)
 
-            for bar_set in [main_bar_set, regressions_bar_set, improvements_bar_set, fallback_bar_set, crash_bar_set, missing_bar_set]:
-                for extra_stat in extra_stats_dict:
-                    bar_set.setProperty(extra_stat, extra_stats_dict[extra_stat])
-                stacked_bar_series.append(bar_set)
+           for bar_set in [main_bar_set, regressions_bar_set, improvements_bar_set, fallback_bar_set, crash_bar_set, missing_bar_set]:
+               for extra_stat in extra_stats_dict:
+                   bar_set.setProperty(extra_stat, extra_stats_dict[extra_stat])
+               stacked_bar_series.append(bar_set)
 
         chart.addSeries(stacked_bar_series)
 
@@ -930,6 +938,10 @@ class MyWindow(QtWidgets.QMainWindow):
         chart_bottom_widget.layout().addWidget(test_type_group_box)
 
         self.scalar_checkbox = QtWidgets.QCheckBox("scalar")
+        pal = QtGui.QPalette()
+        pal.setColor(QtGui.QPalette.Base, self.render_profile_chart.scalar_color)
+        pal.setColor(QtGui.QPalette.WindowText, self.render_profile_chart.scalar_color)
+        self.scalar_checkbox.setPalette(pal)
         self.scalar_checkbox.setChecked(True)
         if self.log_file_mode:
             self.scalar_checkbox.stateChanged.connect(self.selection_changed_logs)
@@ -938,6 +950,10 @@ class MyWindow(QtWidgets.QMainWindow):
         test_type_group_box.layout().addWidget(self.scalar_checkbox)
 
         self.vector_checkbox = QtWidgets.QCheckBox("vector")
+        pal = QtGui.QPalette()
+        pal.setColor(QtGui.QPalette.Base, self.render_profile_chart.vector_color)
+        pal.setColor(QtGui.QPalette.WindowText, self.render_profile_chart.vector_color)
+        self.vector_checkbox.setPalette(pal)
         self.vector_checkbox.setChecked(True)
         if self.log_file_mode:
             self.vector_checkbox.stateChanged.connect(self.selection_changed_logs)
@@ -946,6 +962,10 @@ class MyWindow(QtWidgets.QMainWindow):
         test_type_group_box.layout().addWidget(self.vector_checkbox)
 
         self.xpu_checkbox = QtWidgets.QCheckBox("xpu")
+        pal = QtGui.QPalette()
+        pal.setColor(QtGui.QPalette.Base, self.render_profile_chart.xpu_color)
+        pal.setColor(QtGui.QPalette.WindowText, self.render_profile_chart.xpu_color)
+        self.xpu_checkbox.setPalette(pal)
         self.xpu_checkbox.setChecked(True)
         if self.log_file_mode:
             self.xpu_checkbox.stateChanged.connect(self.selection_changed_logs)
@@ -1791,7 +1811,7 @@ class MyWindow(QtWidgets.QMainWindow):
                     time = tokens[-2]
                     time = time.replace(',', '')
                     stats[stat_name] = float(time)
-                elif 'MCRT Time Breakdown' in line:
+                elif '- MCRT Time Breakdown -' in line:
                     in_breakdown = True
                     found_breakdown = True
                 elif in_render_prep:
@@ -1802,7 +1822,7 @@ class MyWindow(QtWidgets.QMainWindow):
                         for stat in self.render_profile_chart.render_prep_stats:
                             if stat in line:
                                 stats[stat] = get_seconds_from_time(line.split()[-1])
-                elif 'Render Prep Stats' in line:
+                elif '- Render Prep Stats -' in line:
                     in_render_prep = True
                 elif in_render_prep_memory:
                     if 'Total memory' in line:
@@ -1812,7 +1832,7 @@ class MyWindow(QtWidgets.QMainWindow):
                         for stat in self.render_profile_chart.memory_stats:
                             if stat in line:
                                 stats[stat] = get_gigabytes_from_size(line.split()[-2], line.split()[-1])
-                elif 'Memory Summary' in line:
+                elif '- Memory Summary -' in line:
                     in_render_prep_memory = True
                 elif 'Pixel samples' in line and 'Pixel samples sqrt' not in line:
                     pixel_samples = line.split('=')[1]
