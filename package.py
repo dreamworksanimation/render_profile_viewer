@@ -16,7 +16,8 @@ authors = [
 # These are appended after "python setup.py build [install]"
 # Add --no-build-sphinx to disable the automatic building of docs.
 rez_build_args = {
-    'python-3.7': ['--no-build-sphinx'],
+    'python-3.9': ['--no-build-sphinx'],
+    'python-3.10': ['--no-build-sphinx'],
 }
 
 if 'cmake' in sys.argv:

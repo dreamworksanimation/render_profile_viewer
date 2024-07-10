@@ -15,6 +15,12 @@ import datetime
 
 from render_profile_viewer._version import __version__
 
+SOFTMAP_LEGACY_PACKAGE = "/rel/rez/dwa/softmap_legacy/11.3.0.0"
+CENTOS7_BITS = "os-CentOS-7/refplat-gcc48/zlib-1.2.8.x.1"
+ROCKY9_BITS = "os-rocky-9/refplat-gcc48.3/gcc-4.8.x.2/zlib-1.2.11.x.1"
+SOFTMAP_LEGACY_BIN = os.path.join(SOFTMAP_LEGACY_PACKAGE, ROCKY9_BITS if
+                                  os.environ['REZ_OS_MAJOR_VERSION'] == 'rocky' else
+                                  CENTOS7_BITS, 'bin')
 
 def get_seconds_from_time(time_string):
     hours = float(time_string.split(':')[-3])
@@ -572,7 +578,7 @@ class RenderProfileChartView(QtChart.QChartView):
         title_font.setPointSize(font_size)
         x_axis.setTitleFont(title_font)
         labels_font = x_axis.labelsFont()
-        labels_font.setPointSize(font_size * 0.75)
+        labels_font.setPointSize(int(font_size * 0.75))
         x_axis.setLabelsFont(labels_font)
         chart.addAxis(x_axis, QtCore.Qt.AlignBottom)
         stacked_bar_series.attachAxis(x_axis)
@@ -1566,7 +1572,7 @@ class MyWindow(QtWidgets.QMainWindow):
 
     def show_selected_images(self):
         self.image_error_message.setText("")
-        cmd = ['/rel/folio/softmap_legacy/softmap_legacy-5.47.0-4/bin/r_view']
+        cmd = [os.path.join(SOFTMAP_LEGACY_BIN, 'r_view')]
         for week in self.stats:
             for test_type in self.stats[week]:
 
@@ -1606,7 +1612,7 @@ class MyWindow(QtWidgets.QMainWindow):
 
                 converted_image = os.path.join(self.converted_images_directory, converted_image)
                 cmd = list()
-                cmd.append('/rel/folio/softmap_legacy/softmap_legacy-5.47.0-4/bin/r_convert')
+                cmd.append(os.path.join(SOFTMAP_LEGACY_BIN, 'r_convert'))
                 cmd.append(source_image)
                 cmd.append(converted_image)
                 cmd.append('-compression')
