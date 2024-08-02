@@ -13,7 +13,10 @@ import copy
 import re
 import datetime
 
-from render_profile_viewer._version import __version__
+try:
+    from render_profile_viewer._version import __version__
+except ModuleNotFoundError:
+    __version__ = 'test'
 
 SOFTMAP_LEGACY_PACKAGE = "/rel/rez/dwa/softmap_legacy/11.3.0.0"
 CENTOS7_BITS = "os-CentOS-7/refplat-gcc48/zlib-1.2.8.x.1"
@@ -1572,7 +1575,7 @@ class MyWindow(QtWidgets.QMainWindow):
 
     def show_selected_images(self):
         self.image_error_message.setText("")
-        cmd = [os.path.join(SOFTMAP_LEGACY_BIN, 'r_view')]
+        cmd = [os.path.join('/rel/folio/rnd2d_tools/rnd2d_tools-10.17.1-1/bin', 'r_view')]
         for week in self.stats:
             for test_type in self.stats[week]:
 
