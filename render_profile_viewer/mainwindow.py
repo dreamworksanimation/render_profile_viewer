@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from PyQt5 import QtWidgets, QtCore, QtChart, QtGui
+from PyQt5.QtGui import QImage, QColor, QTextCharFormat
 import os
+import numpy as np
+import OpenImageIO as oiio
 import fnmatch
 import json
 import sys
@@ -18,12 +21,38 @@ try:
 except ModuleNotFoundError:
     __version__ = 'test'
 
-SOFTMAP_LEGACY_PACKAGE = "/rel/rez/dwa/softmap_legacy/11.3.0.0"
-CENTOS7_BITS = "os-CentOS-7/refplat-gcc48/zlib-1.2.8.x.1"
-ROCKY9_BITS = "os-rocky-9/refplat-gcc48.3/gcc-4.8.x.2/zlib-1.2.11.x.1"
-SOFTMAP_LEGACY_BIN = os.path.join(SOFTMAP_LEGACY_PACKAGE, ROCKY9_BITS if
-                                  os.environ['REZ_OS_MAJOR_VERSION'] == 'rocky' else
-                                  CENTOS7_BITS, 'bin')
+def load_exr_as_qimage(file_path, gamma=2.2):
+    # Open the EXR file
+    input_file = oiio.ImageInput.open(file_path)
+    if not input_file:
+        raise RuntimeError(f"Could not open {file_path}")
+
+    # Read the image data
+    spec = input_file.spec()
+    image = input_file.read_image()
+    input_file.close()
+
+    # Convert the image to numpy array and normalize to 0-255 range
+    image_array = np.array(image)
+
+    # Apply gamma correction
+    image_array = np.power(image_array, 1/gamma)
+
+    image_array = np.clip(image_array * 255, 0, 255).astype(np.uint8)
+
+    # If the image has an alpha channel, drop it
+    if image_array.shape[2] == 4:
+        image_array = image_array[:, :, :3]
+
+    # Ensure the array is contiguous in memory
+    image_array = np.ascontiguousarray(image_array)
+
+    # Create QImage from the numpy array
+    height, width, channels = image_array.shape
+    bytes_per_line = channels * width
+    q_image = QImage(image_array.tobytes(), width, height, bytes_per_line, QImage.Format_RGB888)
+
+    return (q_image, width, height)
 
 def get_seconds_from_time(time_string):
     hours = float(time_string.split(':')[-3])
@@ -192,12 +221,12 @@ class RenderProfileChartView(QtChart.QChartView):
 
             pixel_samples = 0.0
             pixel_samples_list = barset.property('pixel_samples')
-            if pixel_samples_list and index < (len(pixel_samples_list) - 1):
+            if pixel_samples_list and index < len(pixel_samples_list):
                 pixel_samples = pixel_samples_list[index]
 
             visible_time = 0.0
             visible_time_list = barset.property('visible_time')
-            if visible_time_list and index < (len(visible_time_list) - 1):
+            if visible_time_list and index < len(visible_time_list):
                 visible_time = visible_time_list[index]
 
             total_render_prep_time = 0.0
@@ -624,12 +653,13 @@ class MyWindow(QtWidgets.QMainWindow):
     def __init__(self, logs):
         super().__init__()
 
+        self.images_cache = dict()
         self.log_file_mode = False
         if logs:
             self.log_files = logs
             self.log_file_mode = True
 
-        self.setGeometry(200, 200, 1700, 800)
+        self.setGeometry(200, 200, 1300, 800)
 
         # TODO Remove these hard coded directories - ask user on first run
         self.profile_directory = "/rel/ci_builds/Moonbase/ProfileRuns/latest_results/profile_reports"
@@ -638,10 +668,6 @@ class MyWindow(QtWidgets.QMainWindow):
         self.work_directory = os.path.join(os.environ["HOME"], "render_profile_viewer")
         if not os.path.exists(self.work_directory):
             os.makedirs(self.work_directory)
-
-        self.converted_images_directory = os.path.join(self.work_directory, 'converted_images')
-        if not os.path.exists(self.converted_images_directory):
-            os.makedirs(self.converted_images_directory)
 
         self.cache_directory = os.path.join(self.work_directory, "cache")
         if not os.path.exists(self.cache_directory):
@@ -652,13 +678,13 @@ class MyWindow(QtWidgets.QMainWindow):
         else:
             self.use_cache = True
 
-        # TODO Remove this hard coded reference
-        self.default_images_directory = "/work/gshad/moonshine/render_profile_viewer/default_images"
-
         self.setWindowTitle(f"Render Profile Viewer {__version__} -- (Profile directory: {self.profile_directory})")
 
         # Stats filled in clicked_weeks_list and passed to RenderProfileChartView
         self.stats = dict()
+
+        # Height for test types and other options group box UI
+        group_box_height = 100
 
         central_widget = QtWidgets.QWidget()
         self.setCentralWidget(central_widget)
@@ -720,50 +746,48 @@ class MyWindow(QtWidgets.QMainWindow):
 
         main_h_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         main_h_splitter.setHandleWidth(10)
-        main_h_splitter.splitterMoved.connect(self.resize_image)
         main_v_layout.addWidget(main_h_splitter)
 
         # Theme
         self.use_dark_theme = True
 
-        # Log List
+        tests_weeks_log_widget = QtWidgets.QWidget()
+        main_h_splitter.addWidget(tests_weeks_log_widget)
+        tests_weeks_log_widget.setLayout(QtWidgets.QVBoxLayout())
+
         if self.log_file_mode:
-            logs_list_widget = QtWidgets.QWidget()
-            logs_list_widget.setLayout(QtWidgets.QVBoxLayout())
+            # Log List
             logs_list_label = QtWidgets.QLabel("Logs")
-            logs_list_widget.layout().addWidget(logs_list_label)
+            tests_weeks_log_widget.layout().addWidget(logs_list_label)
             self.show_full_paths_checkbox = QtWidgets.QCheckBox("Show full paths")
             self.show_full_paths_checkbox.stateChanged.connect(self.checkbox_changed_full_paths)
-            logs_list_widget.layout().addWidget(self.show_full_paths_checkbox)
+            tests_weeks_log_widget.layout().addWidget(self.show_full_paths_checkbox)
             self.logs_list = QtWidgets.QListWidget()
             self.logs_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-            logs_list_widget.layout().addWidget(self.logs_list)
+            tests_weeks_log_widget.layout().addWidget(self.logs_list)
             self.logs_list.itemSelectionChanged.connect(self.selection_changed_logs)
-            main_h_splitter.addWidget(logs_list_widget)
             self.populate_logs_list()
             self.logs_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
             self.logs_list.customContextMenuRequested.connect(self.log_list_context_menu)
         else:
-            tests_weeks_widget = QtWidgets.QWidget()
-            tests_weeks_widget.setLayout(QtWidgets.QVBoxLayout())
             tests_weeks_v_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
             tests_weeks_v_splitter.setHandleWidth(10)
-            tests_weeks_widget.layout().addWidget(tests_weeks_v_splitter)
-            main_h_splitter.addWidget(tests_weeks_widget)
+            tests_weeks_log_widget.layout().addWidget(tests_weeks_v_splitter)
 
             # Test List
             tests_list_widget = QtWidgets.QWidget()
+            tests_weeks_v_splitter.addWidget(tests_list_widget)
             tests_list_widget.setLayout(QtWidgets.QVBoxLayout())
             tests_list_label = QtWidgets.QLabel("Tests")
             tests_list_widget.layout().addWidget(tests_list_label)
             self.tests_list = QtWidgets.QListWidget()
             tests_list_widget.layout().addWidget(self.tests_list)
             self.tests_list.itemSelectionChanged.connect(self.selection_changed_tests)
-            tests_weeks_v_splitter.addWidget(tests_list_widget)
             self.populate_test_list()
 
             # Weeks List
             weeks_list_widget = QtWidgets.QWidget()
+            tests_weeks_v_splitter.addWidget(weeks_list_widget)
             weeks_list_widget.setLayout(QtWidgets.QVBoxLayout())
             weeks_list_label = QtWidgets.QLabel("Weeks")
             weeks_list_widget.layout().addWidget(weeks_list_label)
@@ -771,7 +795,6 @@ class MyWindow(QtWidgets.QMainWindow):
             weeks_list_widget.layout().addWidget(self.weeks_list)
             self.weeks_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
             self.weeks_list.itemSelectionChanged.connect(self.selection_changed_weeks)
-            tests_weeks_v_splitter.addWidget(weeks_list_widget)
 
         # Chart / Image / Log tab widget
         self.chart_image_log_tab_widget = QtWidgets.QTabWidget()
@@ -815,9 +838,9 @@ class MyWindow(QtWidgets.QMainWindow):
 
         # Render prep stats
         for stat in self.render_profile_chart.render_prep_stats:
-            self.add_stat_checkbox(stat, chart_stats_widget, False)
+            self.add_stat_checkbox(stat, chart_stats_widget, True)
         self.show_hide_render_prep_checkbox = QtWidgets.QCheckBox("Show/Hide Render Prep Stats")
-        self.show_hide_render_prep_checkbox.setChecked(False)
+        self.show_hide_render_prep_checkbox.setChecked(True)
         self.show_hide_render_prep_checkbox.stateChanged.connect(self.show_hide_render_prep_stats)
         chart_stats_widget.layout().addWidget(self.show_hide_render_prep_checkbox)
         chart_stats_widget.layout().addWidget(QtWidgets.QLabel("Render Prep Stats"))
@@ -875,76 +898,12 @@ class MyWindow(QtWidgets.QMainWindow):
         chart_stats_h_splitter.addWidget(self.render_profile_chart)
         chart_stats_h_splitter.setSizes([175, 800])
 
-        # Image Tab
-        self.image_tab_widget = QtWidgets.QTabWidget()
-        self.chart_image_log_tab_widget.addTab(self.image_tab_widget, "Image")
-
-        self.generic_image_widget = QtWidgets.QWidget()
-        self.image_tab_widget.addTab(self.generic_image_widget, "Generic Image")
-
-        self.generic_image_widget.setLayout(QtWidgets.QVBoxLayout())
-
-        # Image error messages
-        self.image_error_message = QtWidgets.QLabel("")
-        self.image_error_message.setStyleSheet(f"color: rgb(255, 0, 0); font-size: 20px;")
-        self.generic_image_widget.layout().addWidget(self.image_error_message)
-
-        # Image Label
-        self.image_label = QtWidgets.QLabel("")
-        self.generic_image_widget.layout().addWidget(self.image_label)
-
-        if not self.log_file_mode:
-            image_warning_label2 = QtWidgets.QLabel("Warning, the image above is generic for the test "
-                                                    "and does not represent the selected weeks or log files.")
-            self.generic_image_widget.layout().addWidget(image_warning_label2)
-            image_warning_label3 = QtWidgets.QLabel("Press the buttons below to show or convert the actual images.")
-            self.generic_image_widget.layout().addWidget(image_warning_label3)
-
-        # Show images button
-        if self.log_file_mode:
-            self.show_images_button = QtWidgets.QPushButton("Show images for selected logs with r_view")
-        else:
-            self.show_images_button = QtWidgets.QPushButton("Show images for selected weeks with r_view")
-        self.show_images_button.setFixedWidth(250)
-        self.show_images_button.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Maximum)
-        self.show_images_button.pressed.connect(self.show_selected_images)
-        self.generic_image_widget.layout().addWidget(self.show_images_button)
-
-        # Convert images button
-        if self.log_file_mode:
-            self.convert_images_button = QtWidgets.QPushButton("Convert images for selected logs")
-        else:
-            self.convert_images_button = QtWidgets.QPushButton("Convert images for selected weeks")
-
-        self.convert_images_button.setFixedWidth(250)
-        self.convert_images_button.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Maximum)
-        self.convert_images_button.pressed.connect(self.convert_selected_images)
-        self.generic_image_widget.layout().addWidget(self.convert_images_button)
-
-        self.generic_image_widget.layout().addStretch()
-
-        # Logs Tab
-        logs_widget = QtWidgets.QWidget()
-        logs_widget.setLayout(QtWidgets.QVBoxLayout())
-        logs_widget.layout().addWidget(QtWidgets.QLabel("Select a week to display log files"))
-        self.chart_image_log_tab_widget.addTab(logs_widget, "Logs")
-
-        self.log_tab_widget = QtWidgets.QTabWidget()
-        logs_widget.layout().addWidget(self.log_tab_widget)
-
-        # Bottom Scalar, Vector, and XPU Checkboxes and Resize
-        chart_bottom_widget = QtWidgets.QWidget()
-        chart_bottom_widget.setLayout(QtWidgets.QHBoxLayout())
-        chart_v_splitter.addWidget(chart_bottom_widget)
-
-        group_box_height = 100
-
         # Test Types
         test_type_group_box = QtWidgets.QGroupBox()
-        test_type_group_box.setLayout(QtWidgets.QHBoxLayout())
+        test_type_group_box.setLayout(QtWidgets.QVBoxLayout())
         test_type_group_box.setFixedHeight(group_box_height)
         test_type_group_box.setTitle("Test Types")
-        chart_bottom_widget.layout().addWidget(test_type_group_box)
+        tests_weeks_log_widget.layout().addWidget(test_type_group_box)
 
         self.scalar_checkbox = QtWidgets.QCheckBox("scalar")
         pal = QtGui.QPalette()
@@ -981,6 +940,106 @@ class MyWindow(QtWidgets.QMainWindow):
         else:
             self.xpu_checkbox.stateChanged.connect(self.selection_changed_weeks)
         test_type_group_box.layout().addWidget(self.xpu_checkbox)
+
+        # Image Tab
+        self.image_widget = QtWidgets.QWidget()
+        self.image_widget.setLayout(QtWidgets.QVBoxLayout())
+        self.chart_image_log_tab_widget.addTab(self.image_widget, "Images")
+
+        # Image Label
+        self.image_label = QtWidgets.QLabel("")
+        self.image_widget.layout().addWidget(self.image_label)
+
+        # Show images button
+        if self.log_file_mode:
+            self.show_images_button = QtWidgets.QPushButton("Show images for selected logs with iv")
+        else:
+            self.show_images_button = QtWidgets.QPushButton("Show images for selected weeks with iv")
+        self.show_images_button.setFixedWidth(250)
+        self.show_images_button.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Maximum)
+        self.show_images_button.pressed.connect(self.show_selected_images)
+        self.image_widget.layout().addWidget(self.show_images_button)
+
+        self.image_tab_widget = QtWidgets.QTabWidget()
+
+        image_scale_widget = QtWidgets.QWidget()
+        image_scale_widget.setLayout(QtWidgets.QHBoxLayout())
+        image_scale_label = QtWidgets.QLabel("Image Scale")
+        image_scale_widget.layout().addWidget(image_scale_label)
+
+        self.image_size_spin_box = QtWidgets.QDoubleSpinBox()
+        self.image_size_spin_box.setFixedWidth(50)
+        self.image_size_spin_box.setSingleStep(0.01)
+        self.image_size_spin_box.setDecimals(2)
+        self.image_size_spin_box.setMinimum(0.1)
+        self.image_size_spin_box.setMaximum(2.0)
+        self.image_size_spin_box.setValue(1.0)
+        self.image_size_spin_box.setEnabled(True)
+        self.image_size_spin_box.valueChanged.connect(self.update_images)
+        self.image_size_spin_box.setToolTip("Scale factor for displayed images")
+        image_scale_widget.layout().addWidget(self.image_size_spin_box)
+        image_scale_widget.layout().addStretch()
+
+        self.image_widget.layout().addWidget(image_scale_widget)
+        self.image_widget.layout().addWidget(self.image_tab_widget)
+        #self.image_widget.layout().addStretch()
+
+        # Logs Tab
+        logs_widget = QtWidgets.QWidget()
+        logs_widget.setLayout(QtWidgets.QVBoxLayout())
+        logs_widget.layout().addWidget(QtWidgets.QLabel("Select a week to display log files"))
+        self.chart_image_log_tab_widget.addTab(logs_widget, "Logs")
+
+        # Font size
+        log_font_size_widget = QtWidgets.QWidget()
+        logs_widget.layout().addWidget(log_font_size_widget)
+        log_font_size_widget.setLayout(QtWidgets.QHBoxLayout())
+        log_font_size_widget.layout().addWidget(QtWidgets.QLabel("Font Size:"))
+        self.log_font_size_spinner = QtWidgets.QSpinBox()
+        self.log_font_size_spinner.setRange(1, 100)  # Set min and max font sizes
+        self.log_font_size_spinner.setValue(12)  # Set default font size
+        self.log_font_size_spinner.valueChanged.connect(self.change_logs_font_size)
+        log_font_size_widget.layout().addWidget(self.log_font_size_spinner)
+        log_font_size_widget.layout().addStretch()
+
+        # Search UI
+        search_widget = QtWidgets.QWidget()
+        logs_widget.layout().addWidget(search_widget)
+        search_widget.setLayout(QtWidgets.QHBoxLayout())
+        search_widget.layout().addWidget(QtWidgets.QLabel("Search"))
+        self.search_text = QtWidgets.QLineEdit()
+        self.search_text.setFixedWidth(200)
+        self.search_text.setClearButtonEnabled(True)
+        self.search_text.returnPressed.connect(self.search_log_next)
+        search_widget.layout().addWidget(self.search_text)
+        self.search_next_button = QtWidgets.QPushButton("Find Next")
+        self.search_next_button.clicked.connect(self.search_log_next)
+        search_widget.layout().addWidget(self.search_next_button)
+        self.search_previous_button = QtWidgets.QPushButton("Find Previous")
+        self.search_previous_button.clicked.connect(self.search_log_previous)
+        search_widget.layout().addWidget(self.search_previous_button)
+        self.search_case_sensitive_checkbox = QtWidgets.QCheckBox("Case Sensitive")
+        search_widget.layout().addWidget(self.search_case_sensitive_checkbox)
+        search_widget.layout().addStretch()
+
+        self.search_forward = True
+        self.last_search = ""
+
+        # Hold list of log browsers to determine which one to search
+        self.log_browsers = []
+
+        self.log_tab_widget = QtWidgets.QTabWidget()
+        logs_widget.layout().addWidget(self.log_tab_widget)
+
+        self.log_scalar_tab = None
+        self.log_vector_tab = None
+        self.log_xpu_tab = None
+
+        # Bottom Scalar, Vector, and XPU Checkboxes and Resize
+        chart_bottom_widget = QtWidgets.QWidget()
+        chart_bottom_widget.setLayout(QtWidgets.QHBoxLayout())
+        chart_v_splitter.addWidget(chart_bottom_widget)
+
 
         # Host Filter
         host_filter_group_box = QtWidgets.QGroupBox()
@@ -1106,8 +1165,6 @@ class MyWindow(QtWidgets.QMainWindow):
         chart_bottom_widget.layout().addStretch()
 
         main_h_splitter.setSizes([250, 1350])
-
-        self.chart_image_log_tab_widget.currentChanged.connect(self.resize_image)
 
         self.show()
 
@@ -1398,14 +1455,6 @@ class MyWindow(QtWidgets.QMainWindow):
         self.process_weeks = True
         self.selection_changed_weeks()
 
-        # show the image
-        self.show_image(test_name)
-
-        # Clear all image tabs except Generic Image
-        self.image_tab_widget.clear()
-        self.image_tab_widget.addTab(self.generic_image_widget, "Generic Image")
-        self.resize_image()
-
     def get_log_path(self, test_name, week, exec_mode):
         test_dir = self.get_test_dir(test_name)
         with os.scandir(test_dir) as files:
@@ -1417,68 +1466,189 @@ class MyWindow(QtWidgets.QMainWindow):
 
         return None
 
-    @staticmethod
-    def find_text_in_browser(search_text, browser_widget):
-        palette = browser_widget.palette()
-        text_format = QtGui.QTextCharFormat()
-        text_format.setBackground(palette.brush(QtGui.QPalette.Normal, QtGui.QPalette.Highlight))
-        text_format.setForeground(palette.brush(QtGui.QPalette.Normal, QtGui.QPalette.HighlightedText))
-        doc = browser_widget.document()
-        cur = QtGui.QTextCursor()
-        selections = []
-        while 1:
-            cur = doc.find(search_text, cur)
-            if cur.isNull():
-                break
-            sel = QtWidgets.QTextEdit.ExtraSelection()
-            sel.cursor = cur
-            sel.format = text_format
-            selections.append(sel)
-        browser_widget.setExtraSelections(selections)
+    def search_log_next(self):
+        self.search_forward = True
+        self.search_log()
 
-    def create_log_widget(self, log_path):
-        log_widget = QtWidgets.QWidget()
-        log_widget.setLayout(QtWidgets.QVBoxLayout())
-        log_browser = QtWidgets.QTextBrowser()
-        log_widget.layout().addWidget(log_browser)
-        find_widget = QtWidgets.QWidget()
-        log_widget.layout().addWidget(find_widget)
-        find_widget.setLayout(QtWidgets.QHBoxLayout())
-        search_label = QtWidgets.QLabel("Search")
-        find_widget.layout().addWidget(search_label)
-        find_text_edit = QtWidgets.QLineEdit()
-        find_text_edit.setClearButtonEnabled(True)
-        find_text_edit.textChanged.connect(lambda: self.find_text_in_browser(find_text_edit.text(), log_browser))
-        find_widget.layout().addWidget(find_text_edit)
-        self.set_log_text(log_browser, log_path)
-        log_file_name = os.path.basename(log_path)
-        self.log_tab_widget.addTab(log_widget, log_file_name)
+    def search_log_previous(self):
+        self.search_forward = False
+        self.search_log()
 
-    def process_log(self, index, test_name, exec_mode, week, log_path):
-        if exec_mode not in self.stats[week]:
-            self.stats[week][exec_mode] = self.get_stats(test_name, week, log_path, exec_mode)
-        if index == 0 and self.chart_image_log_tab_widget.currentIndex() == 2:
-            self.create_log_widget(log_path)
+    def search_log(self):
+        if len(self.log_browsers) == 0:
+            return
+        browser_widget = self.log_browsers[self.log_tab_widget.currentIndex()]
 
-    def process_logs(self, test_name, exec_mode):
+        search_text = self.search_text.text()
+        if not search_text:
+            return
+
+        if not self.last_search or (self.last_search and search_text != self.last_search):
+            # Reset cursor to beginning
+            cursor = browser_widget.textCursor()
+            cursor.setPosition(0)
+            browser_widget.setTextCursor(cursor)
+            self.last_search = search_text
+
+        # Determine search flags
+        flags = browser_widget.document().FindFlags()
+        if not self.search_forward:
+            flags |= browser_widget.document().FindBackward
+        if self.search_case_sensitive_checkbox.isChecked():
+            flags |= browser_widget.document().FindCaseSensitively
+
+        found = browser_widget.find(self.last_search, flags)
+
+        if found:
+            # Text is found, it's now selected
+            pass
+        else:
+            # If not found, wrap around
+            cursor = browser_widget.textCursor()
+            if self.search_forward:
+                cursor.movePosition(QtGui.QTextCursor.Start)
+            else:
+                cursor.movePosition(QtGui.QTextCursor.End)
+            browser_widget.setTextCursor(cursor)
+            found = browser_widget.find(self.last_search, flags)
+            if not found:
+                QtWidgets.QMessageBox.information(self, "Find Next", f"No more occurances of '{self.last_search}'")
+
+    def process_logs(self, test_name, test_type):
         # selectedItems needs to handle profile runs that run into the next day better.
         for i, item in enumerate(sorted(self.weeks_list.selectedItems())):
             week = item.text()
             if week not in self.stats:
                 self.stats[week] = dict()
-            log_path = self.get_log_path(test_name, week, exec_mode)
+            log_path = self.get_log_path(test_name, week, test_type)
             if not log_path:
                 next_day = str(datetime.datetime.strptime(week, "%Y-%m-%d").date() +
                                datetime.timedelta(days=1))
-                log_path = self.get_log_path(test_name, next_day, exec_mode)
+                log_path = self.get_log_path(test_name, next_day, test_type)
                 if not log_path:
                     prev_day = str(datetime.datetime.strptime(week, "%Y-%m-%d").date() -
                                    datetime.timedelta(days=1))
-                    log_path = self.get_log_path(test_name, prev_day, exec_mode)
+                    log_path = self.get_log_path(test_name, prev_day, test_type)
                     if not log_path:
-                        self.stats[week][exec_mode] = "missing"
+                        self.stats[week][test_type] = "missing"
             if log_path:
-                self.process_log(i, test_name, exec_mode, week, log_path)
+                if test_type not in self.stats[week]:
+                    self.stats[week][test_type] = self.get_stats(test_name, week, log_path, test_type)
+                if i == 0:
+                    self.create_log_widget(log_path, test_type)
+
+    def apply_ansi_escape_codes(self, log_browser, text):
+        cursor = log_browser.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.Start)
+
+        # ANSI color codes
+        ansi_color_codes = {
+            '30': QColor(0, 0, 0),  # Black
+            '31': QColor(255, 0, 0),  # Red
+            '32': QColor(0, 255, 0),  # Green
+            '33': QColor(255, 255, 0),  # Yellow
+            '34': QColor(0, 0, 255),  # Blue
+            '35': QColor(255, 0, 255),  # Magenta
+            '36': QColor(0, 255, 255),  # Cyan
+            '37': QColor(255, 255, 255),  # White
+            '90': QColor(128, 128, 128),  # Bright Black (Gray)
+            '91': QColor(255, 0, 0),  # Bright Red
+            '92': QColor(0, 255, 0),  # Bright Green
+            '93': QColor(255, 255, 0),  # Bright Yellow
+            '94': QColor(0, 0, 255),  # Bright Blue
+            '95': QColor(255, 0, 255),  # Bright Magenta
+            '96': QColor(0, 255, 255),  # Bright Cyan
+            '97': QColor(255, 255, 255),  # Bright White
+        }
+
+        # Regular expression to match ANSI escape codes
+        ansi_escape = re.compile(r'\x1b\[((?:\d+;)*\d+)m')
+
+        # Split the text by ANSI escape codes
+        fragments = ansi_escape.split(text)
+
+        for i, fragment in enumerate(fragments):
+            if i % 2 == 0:
+                # This is a text fragment
+                cursor.insertText(fragment)
+            else:
+                # This is an ANSI code fragment
+                codes = fragment.split(';')
+                format = QTextCharFormat()
+
+                for code in codes:
+                    if code in ansi_color_codes:
+                        format.setForeground(ansi_color_codes[code])
+                    elif code == '1':
+                        format.setFontWeight(QtGui.QFont.Bold)
+                    elif code == '3':
+                        format.setFontItalic(True)
+                    elif code == '4':
+                        format.setFontUnderline(True)
+                    # Add more code handlers as needed
+
+                cursor.setCharFormat(format)
+
+        log_browser.setTextCursor(cursor)
+        log_browser.moveCursor(QtGui.QTextCursor.Start)
+
+    def create_log_widget(self, log_path, test_type):
+        log_widget = QtWidgets.QWidget()
+        log_widget.setLayout(QtWidgets.QVBoxLayout())
+        log_browser = QtWidgets.QTextBrowser()
+        # Set the stylesheet for the QTextBrowser
+        log_browser.setStyleSheet("""
+            QTextBrowser {
+                background-color: black;
+                color: white;
+            }
+            QTextBrowser::selection {
+                background-color: yellow;
+                color: black;
+            }
+        """)
+
+        # Set initial monospace font
+        font = QtGui.QFont("Courier")
+        font.setStyleHint(QtGui.QFont.Monospace)
+        font.setFixedPitch(True)
+        font.setPointSize(self.log_font_size_spinner.value())
+        log_browser.setFont(font)
+
+        self.log_browsers.append(log_browser)
+
+        self.set_log_text(log_browser, log_path)
+        log_widget.layout().addWidget(log_browser)
+
+        if test_type == 'scalar':
+            if self.log_scalar_tab == None:
+                self.log_scalar_tab = QtWidgets.QTabWidget()
+                self.log_tab_widget.addTab(self.log_scalar_tab, "scalar")
+            self.log_scalar_tab.addTab(log_widget, os.path.basename(log_path))
+        elif test_type == 'vector':
+            if self.log_vector_tab == None:
+                self.log_vector_tab = QtWidgets.QTabWidget()
+                self.log_tab_widget.addTab(self.log_vector_tab, "vector")
+            self.log_vector_tab.addTab(log_widget, os.path.basename(log_path))
+        elif test_type == 'xpu':
+            if self.log_xpu_tab == None:
+                self.log_xpu_tab = QtWidgets.QTabWidget()
+                self.log_tab_widget.addTab(self.log_xpu_tab, "xpu")
+            self.log_xpu_tab.addTab(log_widget, os.path.basename(log_path))
+
+
+    def change_log_font_size(self, log_browser, size):
+        # Create a new font with the desired size
+        new_font = log_browser.font()
+        new_font.setPointSize(size)
+        # Set the new font as the default for the document
+        log_browser.document().setDefaultFont(new_font)
+        # Update the viewport to reflect the changes
+        log_browser.viewport().update()
+
+    def change_logs_font_size(self, size):
+        for log_browser in self.log_browsers:
+            self.change_log_font_size(log_browser, size)
 
     def selection_changed_weeks(self):
         if not self.process_weeks:
@@ -1487,7 +1657,13 @@ class MyWindow(QtWidgets.QMainWindow):
         if len(self.tests_list.selectedItems()) == 0:
             return
 
+        # Reset log browser list
+        self.log_browsers = []
+        self.log_scalar_tab = None
+        self.log_vector_tab = None
+        self.log_xpu_tab = None
         self.log_tab_widget.clear()
+
         test_name = self.tests_list.selectedItems()[0].text()
         if self.scalar_checkbox.isChecked():
             self.process_logs(test_name, 'scalar')
@@ -1496,7 +1672,16 @@ class MyWindow(QtWidgets.QMainWindow):
         if self.xpu_checkbox.isChecked():
             self.process_logs(test_name, 'xpu')
 
+        # Set initial font size
+        self.change_logs_font_size(self.log_font_size_spinner.value())
+
         self.update_chart(resize=True)
+
+        try:
+            self.update_images()
+        except (RuntimeError, KeyError) as e:
+            print(f"Caught an exception: {e}")
+
 
     def get_unique_test_name(self, test_name, log_file):
         dir_name = os.path.dirname(log_file)
@@ -1546,36 +1731,81 @@ class MyWindow(QtWidgets.QMainWindow):
 
         self.update_chart(resize=True)
 
-    def resizeEvent(self, a0: QtGui.QResizeEvent) -> None:
-        self.resize_image()
 
-    def resize_image(self):
-        sz = self.generic_image_widget.size()
-        sz.setWidth(min(sz.width(), 1000))
-        sz.setHeight(min(sz.height(), 600))
-        image_path = self.image_label.property('image_path')
-        if image_path:
-            pixmap = QtGui.QPixmap(image_path)
-        else:
-            pixmap = QtGui.QPixmap()
-        self.image_label.setPixmap(pixmap.scaled(sz.width(), sz.height(),
-                                                 QtCore.Qt.KeepAspectRatio))
+    def update_images(self):
+        self.image_tab_widget.clear()
+        scalar_tab = None
+        vector_tab = None
+        xpu_tab = None
+        for week in self.stats:
+            for test_type in self.stats[week]:
+                QtCore.QCoreApplication.processEvents()
+                if (test_type == 'scalar' and self.scalar_checkbox.isChecked()) or \
+                   (test_type == 'vector' and self.vector_checkbox.isChecked()) or \
+                   (test_type == 'xpu' and self.xpu_checkbox.isChecked()):
 
-    def show_image(self, test_name):
-        # Test name is like: "tests_differentials_scene_text_aux"
-        # Remove the "tests_" prefix and "_aux" suffix
-        image_base_name = '_'.join(test_name.split('_')[1:-1]) + ".jpg"
-        image_path = os.path.join(self.default_images_directory, image_base_name)
-        self.image_label.setProperty('image_path', image_path)
-        if os.path.exists(image_path):
-            self.image_error_message.setText(f"")
-        else:
-            self.image_error_message.setText(f"Error: Image file not found: {image_path}")
-        self.resize_image()
+                    if 'output_image' not in self.stats[week][test_type]:
+                        continue
+
+                    output_image = self.stats[week][test_type]['output_image']
+
+                    q_image = None
+                    image_width = 0
+                    image_height = 0
+                    if output_image in self.images_cache:
+                        (q_image, image_width, image_height) = self.images_cache[output_image]
+                    else:
+                        if os.path.exists(output_image):
+                            if not output_image in self.images_cache:
+                                (q_image, image_width, image_height) = load_exr_as_qimage(output_image)
+                                self.images_cache[output_image] = (q_image, image_width, image_height)
+                        else:
+                            print(f"Error: Image file not found: {output_image}")
+                            continue
+
+                    image_widget = QtWidgets.QWidget()
+                    image_widget.setLayout(QtWidgets.QVBoxLayout())
+                    image_scroll_area = QtWidgets.QScrollArea()
+                    image_scroll_area.setWidgetResizable(True)
+                    image_widget.layout().addWidget(image_scroll_area)
+
+                    image_label = QtWidgets.QLabel("")
+                    image_label.setAlignment(QtCore.Qt.AlignCenter)
+                    image_label.setProperty('image_path', output_image)
+                    image_label.setScaledContents(False)
+                    size_factor = self.image_size_spin_box.value()
+                    w = int(size_factor * image_width)
+                    h = int(size_factor * image_height)
+
+                    pixmap = QtGui.QPixmap(q_image)
+                    image_label.setPixmap(pixmap.scaled(w, h,
+                                                        QtCore.Qt.KeepAspectRatio,
+                                                        QtCore.Qt.SmoothTransformation))
+                    image_scroll_area.setWidget(image_label)
+
+                    if self.log_file_mode:
+                        tab_name = self.stats[week][test_type]['display_name']
+                    else:
+                        tab_name = f"{week}_{test_type}"
+
+                    if test_type == 'scalar':
+                        if scalar_tab == None:
+                            scalar_tab = QtWidgets.QTabWidget()
+                            self.image_tab_widget.addTab(scalar_tab, "scalar")
+                        scalar_tab.addTab(image_widget, tab_name)
+                    elif test_type == 'vector':
+                        if vector_tab == None:
+                            vector_tab = QtWidgets.QTabWidget()
+                            self.image_tab_widget.addTab(vector_tab, "vector")
+                        vector_tab.addTab(image_widget, tab_name)
+                    elif test_type == 'xpu':
+                        if xpu_tab == None:
+                            xpu_tab = QtWidgets.QTabWidget()
+                            self.image_tab_widget.addTab(xpu_tab, "xpu")
+                        xpu_tab.addTab(image_widget, tab_name)
 
     def show_selected_images(self):
-        self.image_error_message.setText("")
-        cmd = [os.path.join('/rel/folio/rnd2d_tools/rnd2d_tools-10.17.1-1/bin', 'r_view')]
+        cmd = ['iv']
         for week in self.stats:
             for test_type in self.stats[week]:
 
@@ -1588,59 +1818,9 @@ class MyWindow(QtWidgets.QMainWindow):
                         if os.path.exists(output_image):
                             cmd.append(output_image)
                         else:
-                            self.image_error_message.setText(f"Error: Image file not found: {output_image}")
+                            print(f"Error: Image file not found: {output_image}")
                             return
         subprocess.Popen(cmd)
-
-    def convert_selected_images(self):
-        # Clear all tabs except Generic Image
-        self.image_tab_widget.clear()
-        self.image_tab_widget.addTab(self.generic_image_widget, "Generic Image")
-
-        for week in self.stats:
-            for typ in self.stats[week]:
-                QtCore.QCoreApplication.processEvents()
-                source_image = self.stats[week][typ]['output_image']
-                if not os.path.exists(source_image):
-                    self.image_error_message.setText(f"Error: Image file not found: {source_image}")
-                    continue
-                converted_image = os.path.basename(source_image)
-                base_name = os.path.splitext(converted_image)[0]
-                if self.log_file_mode:
-                    log_file_name = week
-                    converted_image = f"{log_file_name}_{typ}_{base_name}.jpg"
-                else:
-                    test_name = self.tests_list.selectedItems()[0].text()
-                    converted_image = f"{test_name}_{week}_{typ}_{base_name}.jpg"
-
-                converted_image = os.path.join(self.converted_images_directory, converted_image)
-                cmd = list()
-                cmd.append(os.path.join(SOFTMAP_LEGACY_BIN, 'r_convert'))
-                cmd.append(source_image)
-                cmd.append(converted_image)
-                cmd.append('-compression')
-                cmd.append('none')
-                subprocess.run(cmd)
-
-                # Add tab for each converted image
-                image_widget = QtWidgets.QWidget()
-                image_widget.setLayout(QtWidgets.QVBoxLayout())
-                image_label = QtWidgets.QLabel("")
-                image_label.setProperty('image_path', converted_image)
-                sz = image_label.size()
-                pixmap = QtGui.QPixmap(converted_image)
-                image_label.setPixmap(pixmap.scaled(sz.width(), sz.height(),
-                                                    QtCore.Qt.KeepAspectRatio,
-                                                    QtCore.Qt.SmoothTransformation))
-                image_widget.layout().addWidget(image_label)
-                image_widget.layout().addStretch()
-
-                if self.log_file_mode:
-                    tab_name = self.stats[week][typ]['display_name']
-                else:
-                    tab_name = f"{week}_{typ}"
-
-                self.image_tab_widget.addTab(image_widget, tab_name)
 
     def update_chart(self, resize=False):
         stats_visibility_list = list()
@@ -1719,8 +1899,7 @@ class MyWindow(QtWidgets.QMainWindow):
                                                self.show_crash_checkbox.isChecked(),
                                                self.chart_label_angle)
 
-    @staticmethod
-    def set_log_text(log_widget, log_file):
+    def set_log_text(self, log_widget, log_file):
         if not log_file:
             log_widget.setText(f"Log: does not exist")
             return
@@ -1728,7 +1907,9 @@ class MyWindow(QtWidgets.QMainWindow):
         if os.path.exists(log_file):
             with open(log_file, 'r') as log_file:
                 log_file_text = log_file.read()
-            log_widget.setText(log_file_text)
+            #log_widget.setText(log_file_text)
+            log_widget.clear()
+            self.apply_ansi_escape_codes(log_widget, log_file_text)
         else:
             log_widget.setText(f"Log: {log_file} does not exist")
 
