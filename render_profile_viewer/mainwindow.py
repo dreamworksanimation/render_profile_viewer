@@ -15,6 +15,7 @@ import subprocess
 import copy
 import re
 import datetime
+import tempfile
 
 try:
     from render_profile_viewer._version import __version__
@@ -648,6 +649,158 @@ class RenderProfileChartView(QtChart.QChartView):
                                  type_visibility_list)
 
 
+class ImageTabWidget(QtWidgets.QTabWidget):
+    """
+    Custom tab widget to use mouse wheel for zooming images
+    """
+    def __init__(self, image_size_spin_box, update_callback, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.image_size_spin_box = image_size_spin_box
+        self.update_callback = update_callback
+
+        # Fix to avoid extra tab creation
+        self.zoom_timer = QtCore.QTimer()
+        self.zoom_timer.setSingleShot(True)
+        self.zoom_timer.timeout.connect(self.reenable_updates)
+
+    def wheelEvent(self, event):
+        self.image_size_spin_box.blockSignals(True)
+
+        delta = event.angleDelta().y()
+        step = self.image_size_spin_box.singleStep()
+        if delta > 0:
+            self.image_size_spin_box.setValue(self.image_size_spin_box.value() + step)
+        else:
+            self.image_size_spin_box.setValue(self.image_size_spin_box.value() - step)
+
+        self.zoom_timer.start(100)
+        event.accept()
+
+    def reenable_updates(self):
+        self.image_size_spin_box.blockSignals(False)
+        self.update_callback()
+
+class CustomTabBar(QtWidgets.QTabBar):
+    """
+    The purpose of this class is to simply allow a red tab for
+    failed image diffs.  There doesn't seem to be an easier way
+    to do it that works.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tabColors = {}  # Dictionary to store tab colors
+        app = QtWidgets.QApplication.instance()
+        palette = app.palette()
+        self.default_color = palette.color(QtGui.QPalette.Button)
+
+    def setTabColor(self, index, color):
+        """Set a custom color for a specific tab index."""
+        self.tabColors[index] = QColor(color)
+        self.update()  # Redraw the tab bar
+
+    def paintEvent(self, event):
+        """
+        This draws a custom colored tab with a rounded top which
+        tries to mimic the default tab style
+        """
+        painter = QtGui.QPainter(self)
+
+        offset = 20
+        selected_color = QtGui.QColor(self.default_color.red() +   offset,
+                                      self.default_color.green() + offset,
+                                      self.default_color.blue() +  offset)
+
+        for index in range(self.count()):
+            rect = self.tabRect(index)
+            color = self.tabColors.get(index, self.default_color)
+
+            radius = 8
+            path = QtGui.QPainterPath()
+            rect = rect.adjusted(0, 0, 0, radius)
+
+            # Draw the top-left rounded corner
+            path.moveTo(rect.topLeft())
+            path.arcTo(rect.left(), rect.top(), radius * 2, radius * 2, 180, -90)
+
+            # Draw the top-right rounded corner
+            path.lineTo(rect.right() - radius, rect.top())
+            path.arcTo(rect.right() - radius * 2, rect.top(), radius * 2, radius * 2, 90, -90)
+
+            # Draw the bottom edge (straight)
+            path.lineTo(rect.bottomRight())
+            path.lineTo(rect.bottomLeft())
+            path.closeSubpath()
+
+            # Fill the path with the tab color
+            if self.currentIndex() == index:
+                painter.setBrush(QtGui.QBrush(selected_color))
+                painter.setPen(QtCore.Qt.NoPen)
+                painter.drawPath(path)
+            else:
+                painter.setBrush(QtGui.QBrush(color))
+                painter.setPen(QtCore.Qt.NoPen)
+                painter.drawPath(path)
+
+            # Draw black outline
+            painter.setPen(QtGui.QPen(QtCore.Qt.black, 1))
+            painter.setBrush(QtCore.Qt.NoBrush)
+            painter.drawPath(path)
+
+            painter.setPen(QtCore.Qt.white)
+
+            text = self.tabText(index)
+            painter.drawText(rect, QtCore.Qt.AlignCenter, text)
+
+class CustomTabWidget(QtWidgets.QTabWidget):
+    def __init__(self):
+        super().__init__()
+        self.customTabBar = CustomTabBar()
+        self.setTabBar(self.customTabBar)
+
+    def addColoredTab(self, widget, title, color):
+        """Add a tab with a specific color."""
+        index = self.addTab(widget, title)
+        self.customTabBar.setTabColor(index, color)
+
+class NoWheelScrollArea(QtWidgets.QScrollArea):
+    """
+    Custom QScrollArea that:
+    - Blocks mouse wheel scrolling
+    - Enables panning with the left mouse button
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setWidgetResizable(True)
+        self.setMouseTracking(True)
+        self.last_pos = None  # Stores last mouse position
+        self.setCursor(QtCore.Qt.ArrowCursor)  # Default cursor
+
+    def wheelEvent(self, event):
+        event.ignore()  # Allow zooming elsewhere
+
+    def mousePressEvent(self, event):
+        """Start panning on left mouse button press."""
+        if event.button() == QtCore.Qt.LeftButton:
+            self.last_pos = event.pos()
+            self.setCursor(QtCore.Qt.ClosedHandCursor)  # Change cursor to indicate dragging
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """Pan the scroll area when dragging with the left mouse button."""
+        if self.last_pos and event.buttons() & QtCore.Qt.LeftButton:
+            delta = event.pos() - self.last_pos  # Compute movement difference
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            self.last_pos = event.pos()  # Update last position
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        """Stop panning when left mouse button is released."""
+        if event.button() == QtCore.Qt.LeftButton:
+            self.last_pos = None
+            self.setCursor(QtCore.Qt.ArrowCursor)  # Restore default cursor
+        super().mouseReleaseEvent(event)
+
 # noinspection PyUnresolvedReferences
 class MyWindow(QtWidgets.QMainWindow):
     def __init__(self, logs):
@@ -658,6 +811,9 @@ class MyWindow(QtWidgets.QMainWindow):
         if logs:
             self.log_files = logs
             self.log_file_mode = True
+
+        self.temp_dir = tempfile.mkdtemp()
+        QtCore.QCoreApplication.instance().aboutToQuit.connect(self.cleanup)
 
         self.setGeometry(200, 200, 1300, 800)
 
@@ -942,7 +1098,21 @@ class MyWindow(QtWidgets.QMainWindow):
         test_type_group_box.layout().addWidget(self.xpu_checkbox)
 
         # Image Tab
-        self.image_widget = QtWidgets.QWidget()
+        self.image_tabs = None
+
+        self.image_size_spin_box = QtWidgets.QDoubleSpinBox()
+        self.image_size_spin_box.setFixedWidth(50)
+        self.image_size_spin_box.setSingleStep(0.05)
+        self.image_size_spin_box.setDecimals(2)
+        self.image_size_spin_box.setMinimum(0.1)
+        self.image_size_spin_box.setMaximum(10.0)
+        self.image_size_spin_box.setValue(1.0)
+        self.image_size_spin_box.setEnabled(True)
+        self.image_size_spin_box.valueChanged.connect(self.update_images)
+        self.image_size_spin_box.setToolTip("Zoom factor for displayed images")
+
+        self.scroll_areas = {"scalar": [], "vector": [], "xpu": []}  # Store scroll areas
+        self.image_widget = ImageTabWidget(self.image_size_spin_box, self.update_images)
         self.image_widget.setLayout(QtWidgets.QVBoxLayout())
         self.chart_image_log_tab_widget.addTab(self.image_widget, "Images")
 
@@ -960,26 +1130,57 @@ class MyWindow(QtWidgets.QMainWindow):
         self.show_images_button.pressed.connect(self.show_selected_images)
         self.image_widget.layout().addWidget(self.show_images_button)
 
-        self.image_tab_widget = QtWidgets.QTabWidget()
+        # Diff images
+        image_diff_widget = QtWidgets.QWidget()
+        image_diff_widget.setLayout(QtWidgets.QHBoxLayout())
+
+        if self.log_file_mode:
+            self.diff_images_button = QtWidgets.QPushButton("Diff images for selected logs")
+        else:
+            self.diff_images_button = QtWidgets.QPushButton("Diff images for selected weeks")
+        self.diff_images_button.setFixedWidth(250)
+        self.diff_images_button.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Maximum)
+        self.diff_images_button.pressed.connect(self.diff_selected_images)
+        image_diff_widget.layout().addWidget(self.diff_images_button)
+
+        image_fail_label = QtWidgets.QLabel("Fail")
+        image_diff_widget.layout().addWidget(image_fail_label)
+        self.image_fail_spin_box = QtWidgets.QDoubleSpinBox()
+        self.image_fail_spin_box.setFixedWidth(50)
+        self.image_fail_spin_box.setSingleStep(0.001)
+        self.image_fail_spin_box.setDecimals(3)
+        self.image_fail_spin_box.setMinimum(0.0)
+        self.image_fail_spin_box.setMaximum(1.0)
+        self.image_fail_spin_box.setValue(0.004)
+        self.image_fail_spin_box.setToolTip("Failure absolute difference threshold")
+        image_diff_widget.layout().addWidget(self.image_fail_spin_box)
+
+        image_fail_percent_label = QtWidgets.QLabel("Fail Percent")
+        image_diff_widget.layout().addWidget(image_fail_percent_label)
+        self.image_fail_percent_spin_box = QtWidgets.QDoubleSpinBox()
+        self.image_fail_percent_spin_box.setFixedWidth(50)
+        self.image_fail_percent_spin_box.setSingleStep(0.01)
+        self.image_fail_percent_spin_box.setDecimals(2)
+        self.image_fail_percent_spin_box.setMinimum(0.0)
+        self.image_fail_percent_spin_box.setMaximum(1.0)
+        self.image_fail_percent_spin_box.setValue(0.01)
+        self.image_fail_percent_spin_box.setToolTip("Allow this percentage of failed pixels")
+        image_diff_widget.layout().addWidget(self.image_fail_percent_spin_box)
+
+        image_diff_widget.layout().addStretch()
 
         image_scale_widget = QtWidgets.QWidget()
         image_scale_widget.setLayout(QtWidgets.QHBoxLayout())
         image_scale_label = QtWidgets.QLabel("Image Scale")
         image_scale_widget.layout().addWidget(image_scale_label)
-
-        self.image_size_spin_box = QtWidgets.QDoubleSpinBox()
-        self.image_size_spin_box.setFixedWidth(50)
-        self.image_size_spin_box.setSingleStep(0.01)
-        self.image_size_spin_box.setDecimals(2)
-        self.image_size_spin_box.setMinimum(0.1)
-        self.image_size_spin_box.setMaximum(2.0)
-        self.image_size_spin_box.setValue(1.0)
-        self.image_size_spin_box.setEnabled(True)
-        self.image_size_spin_box.valueChanged.connect(self.update_images)
-        self.image_size_spin_box.setToolTip("Scale factor for displayed images")
         image_scale_widget.layout().addWidget(self.image_size_spin_box)
+        help_label = QtWidgets.QLabel("Tip: Zoom with mouse wheel, Pan with left mouse, PgUp/PgDown changes tabs")
+        image_scale_widget.layout().addWidget(help_label)
         image_scale_widget.layout().addStretch()
 
+        self.image_tab_widget = QtWidgets.QTabWidget()
+
+        self.image_widget.layout().addWidget(image_diff_widget)
         self.image_widget.layout().addWidget(image_scale_widget)
         self.image_widget.layout().addWidget(self.image_tab_widget)
         #self.image_widget.layout().addStretch()
@@ -1187,6 +1388,10 @@ class MyWindow(QtWidgets.QMainWindow):
             self.tests_list.setCurrentRow(0)
             self.selection_changed_tests()
             self.weeks_list.selectAll()
+
+    def cleanup(self):
+        if self.temp_dir:
+            shutil.rmtree(self.temp_dir)
 
     def log_list_context_menu(self, position):
         pop_menu = QtWidgets.QMenu()
@@ -1429,6 +1634,9 @@ class MyWindow(QtWidgets.QMainWindow):
         return os.path.join(self.profile_directory, test_name)
 
     def selection_changed_tests(self):
+        # Reset zoom
+        self.image_size_spin_box.setValue(1.0)
+
         prev_selected_weeks = [i.text() for i in self.weeks_list.selectedItems()]
 
         self.weeks_list.clear()
@@ -1651,6 +1859,7 @@ class MyWindow(QtWidgets.QMainWindow):
             self.change_log_font_size(log_browser, size)
 
     def selection_changed_weeks(self):
+        self.diff_cache = dict()
         if not self.process_weeks:
             return
         self.stats.clear()
@@ -1731,78 +1940,167 @@ class MyWindow(QtWidgets.QMainWindow):
 
         self.update_chart(resize=True)
 
+    def create_tab_widget(self, name):
+        tab = CustomTabWidget()
+        self.image_tab_widget.addTab(tab, name)
+
+        # Add shortcuts
+        next_tab = QtWidgets.QShortcut(QtGui.QKeySequence("PgDown"), tab)
+        next_tab.activated.connect(
+            lambda: tab.setCurrentIndex((tab.currentIndex() + 1) % tab.count()))
+
+        prev_tab = QtWidgets.QShortcut(QtGui.QKeySequence("PgUp"), tab)
+        prev_tab.activated.connect(
+            lambda: tab.setCurrentIndex((tab.currentIndex() - 1) % tab.count()))
+
+        return tab
+
+    def sync_vertical_scroll(self, value):
+        for test_type, scroll_areas in self.scroll_areas.items():
+            for area in scroll_areas:
+                area.verticalScrollBar().setValue(value)
+
+    def sync_horizontal_scroll(self, value):
+        for test_type, scroll_areas in self.scroll_areas.items():
+            for area in scroll_areas:
+                area.horizontalScrollBar().setValue(value)
+
+    def create_image_widget(self,
+                            test_type,
+                            output_image,
+                            q_image,
+                            image_width,
+                            image_height,
+                            scroll_x,
+                            scroll_y):
+        image_label = QtWidgets.QLabel("")
+        image_label.setAlignment(QtCore.Qt.AlignCenter)
+        image_label.setProperty('image_path', output_image)
+        image_label.setScaledContents(False)
+        size_factor = self.image_size_spin_box.value()
+        w = int(size_factor * image_width)
+        h = int(size_factor * image_height)
+        pixmap = QtGui.QPixmap(q_image)
+        image_label.setPixmap(pixmap.scaled(w, h,
+                                            QtCore.Qt.KeepAspectRatio,
+                                            QtCore.Qt.SmoothTransformation))
+
+        image_scroll_area = NoWheelScrollArea()
+        image_scroll_area.setWidget(image_label)
+        image_scroll_area.setWidgetResizable(True)
+        image_scroll_area.horizontalScrollBar().setValue(scroll_x)
+        image_scroll_area.verticalScrollBar().setValue(scroll_y)
+        image_scroll_area.verticalScrollBar().valueChanged.connect(self.sync_vertical_scroll)
+        image_scroll_area.horizontalScrollBar().valueChanged.connect(self.sync_horizontal_scroll)
+        self.scroll_areas[test_type].append(image_scroll_area)
+
+        image_widget = QtWidgets.QWidget()
+        image_widget.setLayout(QtWidgets.QVBoxLayout())
+        image_widget.layout().addWidget(image_scroll_area)
+
+        return image_widget
+
+    def get_scroll_positions(self):
+        scroll_x = 0
+        scroll_y = 0
+        if self.scroll_areas:
+            for test_type in self.scroll_areas:
+                for area in self.scroll_areas[test_type]:
+                    scroll_x = area.horizontalScrollBar().value()
+                    scroll_y = area.verticalScrollBar().value()
+                    # All the scolls are the same so we just need the first one
+                    break
+        return (scroll_x, scroll_y)
 
     def update_images(self):
+        # Get previous scroll positions
+        (scroll_x, scroll_y) = self.get_scroll_positions()
+
+        # Remember the current tabs to restore at the end of this function
+        current_tab_indices = {"scalar":0, "vector":0, "xpu":0}
+        if self.image_tabs:
+            for test_type in self.image_tabs:
+                if self.image_tabs[test_type]:
+                        current_tab_indices[test_type] = self.image_tabs[test_type].currentIndex()
+
+        self.scroll_areas = {"scalar": [], "vector": [], "xpu": []}  # Store scroll areas
         self.image_tab_widget.clear()
-        scalar_tab = None
-        vector_tab = None
-        xpu_tab = None
+
+        self.image_tabs = {
+            'scalar': self.create_tab_widget("scalar") if self.scalar_checkbox.isChecked() else None,
+            'vector': self.create_tab_widget("vector") if self.vector_checkbox.isChecked() else None,
+            'xpu': self.create_tab_widget("xpu") if self.xpu_checkbox.isChecked() else None
+        }
+
         for week in self.stats:
             for test_type in self.stats[week]:
                 QtCore.QCoreApplication.processEvents()
-                if (test_type == 'scalar' and self.scalar_checkbox.isChecked()) or \
-                   (test_type == 'vector' and self.vector_checkbox.isChecked()) or \
-                   (test_type == 'xpu' and self.xpu_checkbox.isChecked()):
 
-                    if 'output_image' not in self.stats[week][test_type]:
+                # Check if the current test type is active
+                if self.image_tabs.get(test_type) is None:
+                    continue
+
+                if 'output_image' not in self.stats[week][test_type]:
+                    continue
+
+                # Add failed diff image if it exists
+                if test_type in self.diff_cache and week in self.diff_cache[test_type]:
+                    (q_image, image_width, image_height) = self.diff_cache[test_type][week]
+                    image_widget = self.create_image_widget(test_type,
+                                                            "diff fail",
+                                                            q_image,
+                                                            image_width,
+                                                            image_height,
+                                                            scroll_x,
+                                                            scroll_y)
+
+                    # Create tab with a red color
+                    self.image_tabs[test_type].addColoredTab(image_widget, "FAIL", "red")
+
+                # Add main image
+                output_image = self.stats[week][test_type]['output_image']
+                q_image = None
+                image_width = 0
+                image_height = 0
+                if output_image in self.images_cache:
+                    (q_image, image_width, image_height) = self.images_cache[output_image]
+                else:
+                    if os.path.exists(output_image):
+                        if not output_image in self.images_cache:
+                            (q_image, image_width, image_height) = load_exr_as_qimage(output_image)
+                            self.images_cache[output_image] = (q_image, image_width, image_height)
+                    else:
+                        print(f"Error: Image file not found: {output_image}")
                         continue
 
-                    output_image = self.stats[week][test_type]['output_image']
+                image_widget = self.create_image_widget(test_type,
+                                                        output_image,
+                                                        q_image,
+                                                        image_width,
+                                                        image_height,
+                                                        scroll_x,
+                                                        scroll_y)
 
-                    q_image = None
-                    image_width = 0
-                    image_height = 0
-                    if output_image in self.images_cache:
-                        (q_image, image_width, image_height) = self.images_cache[output_image]
-                    else:
-                        if os.path.exists(output_image):
-                            if not output_image in self.images_cache:
-                                (q_image, image_width, image_height) = load_exr_as_qimage(output_image)
-                                self.images_cache[output_image] = (q_image, image_width, image_height)
-                        else:
-                            print(f"Error: Image file not found: {output_image}")
-                            continue
+                if self.log_file_mode:
+                    tab_name = self.stats[week][test_type]['display_name']
+                else:
+                    tab_name = f"{week}"
 
-                    image_widget = QtWidgets.QWidget()
-                    image_widget.setLayout(QtWidgets.QVBoxLayout())
-                    image_scroll_area = QtWidgets.QScrollArea()
-                    image_scroll_area.setWidgetResizable(True)
-                    image_widget.layout().addWidget(image_scroll_area)
+                # Use current button color from light/dark theme for tab color
+                app = QtWidgets.QApplication.instance()
+                palette = app.palette()
+                col = palette.color(QtGui.QPalette.Button)
+                self.image_tabs[test_type].addColoredTab(image_widget, tab_name, col)
 
-                    image_label = QtWidgets.QLabel("")
-                    image_label.setAlignment(QtCore.Qt.AlignCenter)
-                    image_label.setProperty('image_path', output_image)
-                    image_label.setScaledContents(False)
-                    size_factor = self.image_size_spin_box.value()
-                    w = int(size_factor * image_width)
-                    h = int(size_factor * image_height)
+        # Add tabs to the image tab widget
+        for test_type, tab in self.image_tabs.items():
+            if tab is not None:
+                self.image_tab_widget.addTab(tab, test_type.capitalize())
 
-                    pixmap = QtGui.QPixmap(q_image)
-                    image_label.setPixmap(pixmap.scaled(w, h,
-                                                        QtCore.Qt.KeepAspectRatio,
-                                                        QtCore.Qt.SmoothTransformation))
-                    image_scroll_area.setWidget(image_label)
-
-                    if self.log_file_mode:
-                        tab_name = self.stats[week][test_type]['display_name']
-                    else:
-                        tab_name = f"{week}_{test_type}"
-
-                    if test_type == 'scalar':
-                        if scalar_tab == None:
-                            scalar_tab = QtWidgets.QTabWidget()
-                            self.image_tab_widget.addTab(scalar_tab, "scalar")
-                        scalar_tab.addTab(image_widget, tab_name)
-                    elif test_type == 'vector':
-                        if vector_tab == None:
-                            vector_tab = QtWidgets.QTabWidget()
-                            self.image_tab_widget.addTab(vector_tab, "vector")
-                        vector_tab.addTab(image_widget, tab_name)
-                    elif test_type == 'xpu':
-                        if xpu_tab == None:
-                            xpu_tab = QtWidgets.QTabWidget()
-                            self.image_tab_widget.addTab(xpu_tab, "xpu")
-                        xpu_tab.addTab(image_widget, tab_name)
+        # Restore current tab
+        for test_type in self.image_tabs:
+            if self.image_tabs[test_type]:
+                self.image_tabs[test_type].setCurrentIndex(current_tab_indices[test_type])
 
     def show_selected_images(self):
         cmd = ['iv']
@@ -1821,6 +2119,61 @@ class MyWindow(QtWidgets.QMainWindow):
                             print(f"Error: Image file not found: {output_image}")
                             return
         subprocess.Popen(cmd)
+
+    def diff_images(self, imageA, imageB, output):
+        fail = self.image_fail_spin_box.value()
+        fail_percent = self.image_fail_percent_spin_box.value()
+        cmd = [ "idiff", imageA, imageB,
+                "--fail", str(fail),
+                "--failpercent", str(fail_percent),
+                "--warn", str(fail),
+                "--warnpercent", str(fail_percent),
+                "-a",
+                "--abs",
+                "-o", output ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if ('FAILURE' in result.stdout):
+            return False
+        else:
+            return True
+
+    def diff_selected_images(self):
+        self.diff_cache = {
+            'scalar': {}, 'vector': {}, 'xpu': {}
+        }
+        prev_image = {"scalar": None, "vector": None, "xpu": None}
+        diff_image = os.path.join(self.temp_dir, "diff.exr")
+
+        tabs = {
+            'scalar': True if self.scalar_checkbox.isChecked() else False,
+            'vector': True if self.vector_checkbox.isChecked() else False,
+            'xpu':    True if self.xpu_checkbox.isChecked()    else False
+        }
+
+        for week in self.stats:
+            for test_type in self.stats[week]:
+                if not tabs.get(test_type): continue
+
+                if not 'output_image' in self.stats[week][test_type]:
+                    print(f"Error: No output image in log for {week}:{test_type}")
+                    continue
+
+                output_image = self.stats[week][test_type]['output_image']
+                if not os.path.exists(output_image):
+                    print(f"Error: Image file not found: {output_image}")
+                    continue
+
+                if not prev_image[test_type]:
+                    prev_image[test_type] = output_image
+                    continue
+
+                if not self.diff_images(prev_image[test_type], output_image, diff_image):
+                    (q_image, image_width, image_height) = load_exr_as_qimage(diff_image)
+                    self.diff_cache[test_type][week] = (q_image, image_width, image_height)
+
+                prev_image[test_type] = output_image
+
+        self.update_images()
 
     def update_chart(self, resize=False):
         stats_visibility_list = list()
