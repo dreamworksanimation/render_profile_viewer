@@ -7,6 +7,7 @@ import os
 import numpy as np
 import OpenImageIO as oiio
 import fnmatch
+import glob
 import json
 import sys
 import shutil
@@ -855,9 +856,13 @@ class MyWindow(QtWidgets.QMainWindow):
         # File Menu
         file_menu = menu_bar.addMenu('File')
 
-        set_profile_dir_action = QtWidgets.QAction("Set profile dir", self)
+        set_profile_dir_action = QtWidgets.QAction("Set alternate profiling dir", self)
         set_profile_dir_action.triggered.connect(self.set_profile_dir)
         file_menu.addAction(set_profile_dir_action)
+
+        set_log_dir_action = QtWidgets.QAction("Set log dir", self)
+        set_log_dir_action.triggered.connect(self.set_log_dir)
+        file_menu.addAction(set_log_dir_action)
 
         use_cache_action = QtWidgets.QAction("Use cache", self)
         use_cache_action.setCheckable(True)
@@ -1131,6 +1136,7 @@ class MyWindow(QtWidgets.QMainWindow):
         self.image_widget.layout().addWidget(self.show_images_button)
 
         # Diff images
+        self.diff_cache = { 'scalar': {}, 'vector': {}, 'xpu': {} }
         image_diff_widget = QtWidgets.QWidget()
         image_diff_widget.setLayout(QtWidgets.QHBoxLayout())
 
@@ -1183,7 +1189,6 @@ class MyWindow(QtWidgets.QMainWindow):
         self.image_widget.layout().addWidget(image_diff_widget)
         self.image_widget.layout().addWidget(image_scale_widget)
         self.image_widget.layout().addWidget(self.image_tab_widget)
-        #self.image_widget.layout().addStretch()
 
         # Logs Tab
         logs_widget = QtWidgets.QWidget()
@@ -1201,6 +1206,12 @@ class MyWindow(QtWidgets.QMainWindow):
         self.log_font_size_spinner.setValue(12)  # Set default font size
         self.log_font_size_spinner.valueChanged.connect(self.change_logs_font_size)
         log_font_size_widget.layout().addWidget(self.log_font_size_spinner)
+        self.apply_ansi_colors_checkbox = QtWidgets.QCheckBox("Apply ANSI colors")
+        self.apply_ansi_colors_checkbox.setChecked(True)
+        self.apply_ansi_colors_checkbox.setToolTip("Apply ansi colors to log file.  Can be slow with large files")
+        log_font_size_widget.layout().addWidget(self.apply_ansi_colors_checkbox)
+        self.word_wrap_checkbox = QtWidgets.QCheckBox("Wrap text")
+        log_font_size_widget.layout().addWidget(self.word_wrap_checkbox)
         log_font_size_widget.layout().addStretch()
 
         # Search UI
@@ -1240,7 +1251,6 @@ class MyWindow(QtWidgets.QMainWindow):
         chart_bottom_widget = QtWidgets.QWidget()
         chart_bottom_widget.setLayout(QtWidgets.QHBoxLayout())
         chart_v_splitter.addWidget(chart_bottom_widget)
-
 
         # Host Filter
         host_filter_group_box = QtWidgets.QGroupBox()
@@ -1382,7 +1392,7 @@ class MyWindow(QtWidgets.QMainWindow):
         self.setStyleSheet(f'font-size: {self.font_size}px')
 
         if self.log_file_mode:
-            self.logs_list.setCurrentRow(0)
+            self.logs_list.selectAll()
         else:
             # Select first row and show chars
             self.tests_list.setCurrentRow(0)
@@ -1420,29 +1430,44 @@ class MyWindow(QtWidgets.QMainWindow):
             self.selection_changed_logs()
 
     # noinspection PyTypeChecker
-    def set_profile_dir(self):
-        self.profile_directory = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            "Select profile report directory",
-            self.profile_directory,
-            QtWidgets.QFileDialog.ShowDirsOnly | QtWidgets.QFileDialog.DontResolveSymlinks
-        )
-        self.setWindowTitle(f"Render Profile Viewer {__version__} -- (Profile directory: {self.profile_directory})")
+    def set_log_dir(self):
+        file_dialog = QtWidgets.QFileDialog(self)
+        file_dialog.setWindowTitle("Select logs directory")
+        file_dialog.setFileMode(QtWidgets.QFileDialog.Directory)
+        file_dialog.setOptions(QtWidgets.QFileDialog.DontUseNativeDialog)  # Forces Qt dialog with input field
+        if file_dialog.exec():
+            logs_dir = file_dialog.selectedFiles()[0]  # Get the chosen directory
+            # Restart the app with the logs passed on the command line
+            python_exe = sys.executable
+            script_path = sys.argv[0]  # Path to the script
+            log_files = glob.glob(f"{logs_dir}/*.log") or ["NoLogFilesFound"]
+            command = [script_path] + log_files
+            print("Restarting with command:", " ".join(command))
+            QtCore.QProcess.startDetached(script_path, log_files)
+            QtWidgets.QApplication.quit()
 
-        self.populate_test_list()
-        self.tests_list.setCurrentRow(0)
-        self.selection_changed_tests()
-        self.weeks_list.selectAll()
-        self.selection_changed_weeks()
+    def set_profile_dir(self):
+        file_dialog = QtWidgets.QFileDialog(self)
+        file_dialog.setWindowTitle("Select profile directory")
+        file_dialog.setFileMode(QtWidgets.QFileDialog.Directory)
+        file_dialog.setOptions(QtWidgets.QFileDialog.DontUseNativeDialog)  # Forces Qt dialog with input field
+        if file_dialog.exec():
+            self.profile_directory = file_dialog.selectedFiles()[0]  # Get the chosen directory
+            self.setWindowTitle(f"Render Profile Viewer {__version__} -- (Profile directory: {self.profile_directory})")
+            self.populate_test_list()
+            self.tests_list.setCurrentRow(0)
+            self.selection_changed_tests()
+            self.weeks_list.selectAll()
+            self.selection_changed_weeks()
 
     # noinspection PyTypeChecker
     def set_cache_dir(self):
-        self.cache_directory = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            "Select cache directory",
-            self.cache_directory,
-            QtWidgets.QFileDialog.ShowDirsOnly | QtWidgets.QFileDialog.DontResolveSymlinks
-        )
+        file_dialog = QtWidgets.QFileDialog(self)
+        file_dialog.setWindowTitle("Select cache directory")
+        file_dialog.setFileMode(QtWidgets.QFileDialog.Directory)
+        file_dialog.setOptions(QtWidgets.QFileDialog.DontUseNativeDialog)  # Forces Qt dialog with input field
+        if file_dialog.exec():
+            self.cache_directory = file_dialog.selectedFiles()[0]  # Get the chosen directory
 
     def clear_cache_dir(self):
         shutil.rmtree(self.cache_directory,
@@ -1722,6 +1747,7 @@ class MyWindow(QtWidgets.QMainWindow):
             if not found:
                 QtWidgets.QMessageBox.information(self, "Find Next", f"No more occurances of '{self.last_search}'")
 
+
     def process_logs(self, test_name, test_type):
         # selectedItems needs to handle profile runs that run into the next day better.
         for i, item in enumerate(sorted(self.weeks_list.selectedItems())):
@@ -1803,14 +1829,17 @@ class MyWindow(QtWidgets.QMainWindow):
     def create_log_widget(self, log_path, test_type):
         log_widget = QtWidgets.QWidget()
         log_widget.setLayout(QtWidgets.QVBoxLayout())
-        log_browser = QtWidgets.QTextBrowser()
+        #log_browser = QtWidgets.QTextBrowser()
+        log_browser = QtWidgets.QPlainTextEdit()
+        if not self.word_wrap_checkbox.isChecked():
+            log_browser.setWordWrapMode(QtGui.QTextOption.NoWrap)
         # Set the stylesheet for the QTextBrowser
         log_browser.setStyleSheet("""
-            QTextBrowser {
+            QPlainTextEdit {
                 background-color: black;
                 color: white;
             }
-            QTextBrowser::selection {
+            QPlainTextEdit::selection {
                 background-color: yellow;
                 color: black;
             }
@@ -1906,7 +1935,13 @@ class MyWindow(QtWidgets.QMainWindow):
         if len(self.logs_list.selectedItems()) == 0:
             return
 
+        # Reset log browser list
+        self.log_browsers = []
+        self.log_scalar_tab = None
+        self.log_vector_tab = None
+        self.log_xpu_tab = None
         self.log_tab_widget.clear()
+
         current_tab_index = self.chart_image_log_tab_widget.currentIndex()
         for i, item in enumerate(self.logs_list.selectedItems()):
             user_role_dict = item.data(QtCore.Qt.UserRole)
@@ -1934,11 +1969,14 @@ class MyWindow(QtWidgets.QMainWindow):
                 self.stats[test_name][log_type]['display_name'] = test_display_name
 
             if i == 0 and current_tab_index == 2:
-                log_widget = QtWidgets.QTextBrowser()
-                self.set_log_text(log_widget, log_file)
-                self.log_tab_widget.addTab(log_widget, test_name)
+                self.create_log_widget(log_file, log_type)
 
         self.update_chart(resize=True)
+
+        try:
+            self.update_images()
+        except (RuntimeError, KeyError) as e:
+            print(f"Caught an exception: {e}")
 
     def create_tab_widget(self, name):
         tab = CustomTabWidget()
@@ -2254,17 +2292,19 @@ class MyWindow(QtWidgets.QMainWindow):
 
     def set_log_text(self, log_widget, log_file):
         if not log_file:
-            log_widget.setText(f"Log: does not exist")
+            log_widget.setPlainText(f"Log: does not exist")
             return
 
         if os.path.exists(log_file):
             with open(log_file, 'r') as log_file:
                 log_file_text = log_file.read()
-            #log_widget.setText(log_file_text)
             log_widget.clear()
-            self.apply_ansi_escape_codes(log_widget, log_file_text)
+            if self.apply_ansi_colors_checkbox.isChecked():
+                self.apply_ansi_escape_codes(log_widget, log_file_text)
+            else:
+                log_widget.setPlainText(log_file_text)
         else:
-            log_widget.setText(f"Log: {log_file} does not exist")
+            log_widget.setPlainText(f"Log: {log_file} does not exist")
 
     def populate_test_list(self):
         self.tests_list.clear()
@@ -2283,7 +2323,7 @@ class MyWindow(QtWidgets.QMainWindow):
         name = os.path.basename(path)
         user_role_dict["name"] = name
         user_role_dict["path"] = path
-        display_text = path
+        display_text = name
         if self.show_full_paths_checkbox.isChecked():
             display_text = path
         item = QtWidgets.QListWidgetItem(display_text)
@@ -2388,10 +2428,10 @@ class MyWindow(QtWidgets.QMainWindow):
                     host_name = host_name.replace(' ', '')
                     host_name = host_name.replace('\n', '')
                     stats['host_name'] = host_name
-                elif 'Wrote' in line:
+                elif 'Wrote' in line and 'Wrote:' not in line:
                     if not found_wrote_line:
                         output_image = line.split()[1]
-                        if output_image.endswith('Image.exr'):
+                        if output_image.endswith('.exr'):
                             stats['output_image'] = output_image
                             found_wrote_line = True
                 elif '-- Callstack:' in line:
