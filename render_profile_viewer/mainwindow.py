@@ -439,6 +439,7 @@ class RenderProfileChartView(QtChart.QChartView):
                      host_visibility_list=None,
                      stat_visibility_list=None,
                      resize=False,
+                     explicit_height=0,
                      font_size=11,
                      show_regressions=False,
                      regressions_threshold=110.0,
@@ -638,7 +639,12 @@ class RenderProfileChartView(QtChart.QChartView):
         if not resize:
             # Set the saved size
             y_axis.setMax(self.max_y)
-        self.max_y = y_axis.max()
+
+        if explicit_height == 0:
+            self.max_y = y_axis.max()
+        else:
+            self.max_y = explicit_height
+            y_axis.setMax(self.max_y)
 
         chart.legend().setVisible(False)
 
@@ -905,6 +911,10 @@ class MyWindow(QtWidgets.QMainWindow):
         set_label_angle_action.triggered.connect(self.set_chart_label_angle)
         view_menu.addAction(set_label_angle_action)
 
+        set_chart_height_action = QtWidgets.QAction("Set explicit chart height", self)
+        set_chart_height_action.triggered.connect(self.set_explicit_chart_height)
+        view_menu.addAction(set_chart_height_action)
+
         main_h_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         main_h_splitter.setHandleWidth(10)
         main_v_layout.addWidget(main_h_splitter)
@@ -967,6 +977,7 @@ class MyWindow(QtWidgets.QMainWindow):
         self.render_profile_chart.stat_signal.connect(self.statusBar().showMessage)
 
         self.chart_label_angle = 90
+        self.explicit_chart_height = 100
 
         # Chart Stats Checkboxes and Buttons
         chart_stats_widget = QtWidgets.QWidget()
@@ -1550,6 +1561,17 @@ class MyWindow(QtWidgets.QMainWindow):
         if ok:
             self.chart_label_angle = angle
             self.update_chart()
+
+    def set_explicit_chart_height(self):
+        height, ok = QtWidgets.QInputDialog.getDouble(self,
+                                                     "Set explicit chart height",
+                                                     "Enter new height",
+                                                     self.explicit_chart_height,
+                                                     0, 1000000)
+
+        if ok:
+            self.explicit_chart_height = height
+            self.update_chart(resize=False, explicit_height=height)
 
     def show_all_stats(self):
         for stat in self.chart_stats_checkboxes.keys():
@@ -2213,7 +2235,7 @@ class MyWindow(QtWidgets.QMainWindow):
 
         self.update_images()
 
-    def update_chart(self, resize=False):
+    def update_chart(self, resize=False, explicit_height=0):
         stats_visibility_list = list()
         for stat in self.chart_stats_checkboxes.keys():
             if self.show_memory_checkbox.isChecked():
@@ -2278,6 +2300,7 @@ class MyWindow(QtWidgets.QMainWindow):
                                                host_visibility_list,
                                                stats_visibility_list,
                                                resize,
+                                               explicit_height,
                                                self.font_size,
                                                self.regression_warning_checkbox.isChecked(),
                                                self.regression_warning_spin_box.value(),
