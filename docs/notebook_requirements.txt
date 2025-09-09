@@ -6,7 +6,7 @@
 --trusted-host pypi.anim.dreamworks.com
 
 # Use for Jupyter Ipython Notebooks
-ipython>=5.6.0,<6.0
+ipython>=8.10.0
 ipykernel>=4.8.2,<5.0
 nbsphinx>=0.3.2,<1.0
 pandoc>=1.0.2,<2.0
