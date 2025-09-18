@@ -121,6 +121,7 @@ class RenderProfileChartView(QtChart.QChartView):
 
                    # GPU Only
                    "GPU occlusion rays":                    (50, 50, 50),
+                   "GPU intersection rays":                 (70, 70, 70),
                    # pixel samples
                    "pixel_samples":                         (200, 50, 100),
                    # memory
@@ -178,7 +179,8 @@ class RenderProfileChartView(QtChart.QChartView):
                     "TLS allocs (excl. RayStates)",
                     "Post integration (SOA->AOS/queuing)"]
 
-    xpu_stats = ["GPU occlusion rays"]
+    xpu_stats = ["GPU occlusion rays",
+                 "GPU intersection rays"]
 
     def __init__(self):
         super().__init__()
