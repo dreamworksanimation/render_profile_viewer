@@ -829,11 +829,15 @@ class MyWindow(QtWidgets.QMainWindow):
         # TODO Remove these hard coded directories - ask user on first run
         self.profile_directory = "/rel/ci_builds/Moonbase/ProfileRuns/latest_results/profile_reports"
         self.process_weeks = True
+        self.current_test_name = None
 
         self.work_directory = os.path.join(os.environ["HOME"], "render_profile_viewer")
         if not os.path.exists(self.work_directory):
             os.makedirs(self.work_directory)
 
+        # Global cache directory to check first
+        self.global_cache_directory = "/work/rd/raas/moonray/ProfileRuns/cache"
+        # User's local cache directory as fallback
         self.cache_directory = os.path.join(self.work_directory, "cache")
         if not os.path.exists(self.cache_directory):
             os.makedirs(self.cache_directory)
@@ -1410,7 +1414,6 @@ class MyWindow(QtWidgets.QMainWindow):
             # Select first row and show chars
             self.tests_list.setCurrentRow(0)
             self.selection_changed_tests()
-            self.weeks_list.selectAll()
 
     def cleanup(self):
         if self.temp_dir:
@@ -1459,6 +1462,10 @@ class MyWindow(QtWidgets.QMainWindow):
             QtCore.QProcess.startDetached(script_path, log_files)
             QtWidgets.QApplication.quit()
 
+        self.populate_test_list()
+        self.tests_list.setCurrentRow(0)
+        self.selection_changed_tests()
+        
     def set_profile_dir(self):
         file_dialog = QtWidgets.QFileDialog(self)
         file_dialog.setWindowTitle("Select profile directory")
@@ -1486,6 +1493,32 @@ class MyWindow(QtWidgets.QMainWindow):
         shutil.rmtree(self.cache_directory,
                       ignore_errors=False)
         os.makedirs(self.cache_directory)
+
+    def load_stats_from_cache(self, cache_file_name):
+        """
+        Try to load stats from global cache or user's local cache directory.
+        Returns stats dict if found, else None.
+        """
+        # Check global cache directory first
+        global_cache_file_path = os.path.join(self.global_cache_directory, cache_file_name)
+        if os.path.exists(global_cache_file_path) and self.use_cache:
+            try:
+                with open(global_cache_file_path) as f:
+                    stats = json.load(f)
+                    return stats
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                print(f"Error reading {global_cache_file_path}: {e}")
+
+        # Check user's local cache directory
+        cache_file_path = os.path.join(self.cache_directory, cache_file_name)
+        if os.path.exists(cache_file_path) and self.use_cache:
+            try:
+                with open(cache_file_path) as f:
+                    stats = json.load(f)
+                return stats
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                print(f"Error reading {cache_file_path}: {e}")
+        return None
 
     def set_use_cache(self):
         self.use_cache = not self.use_cache
@@ -1682,6 +1715,26 @@ class MyWindow(QtWidgets.QMainWindow):
     def get_test_dir(self, test_name):
         return os.path.join(self.profile_directory, test_name)
 
+    def extract_weeks_from_cache_directory(self, cache_dir, test_name, weeks):
+        """Extract weeks from cache files in the specified directory.
+        
+        Args:
+            cache_dir: Path to the cache directory to scan
+            test_name: Name of the test to filter cache files
+            weeks: Set to add discovered weeks to
+        """
+        if not os.path.isdir(cache_dir):
+            return
+        
+        with os.scandir(cache_dir) as cache_files:
+            for f in cache_files:
+                if not f.is_dir() and f.name.startswith(test_name + '_') and f.name.endswith('.json'):
+                    # Extract week from cache filename: testname_week_logtype.json
+                    parts = f.name[len(test_name) + 1:].split('_')
+                    if len(parts) >= 2:
+                        week = parts[0]
+                        weeks.add(week)
+
     def selection_changed_tests(self):
         # Reset zoom
         self.image_size_spin_box.setValue(1.0)
@@ -1694,6 +1747,10 @@ class MyWindow(QtWidgets.QMainWindow):
             return
 
         test_name = self.tests_list.selectedItems()[0].text()
+        
+        # Check if we're switching to a different test
+        is_new_test = (test_name != self.current_test_name)
+        self.current_test_name = test_name
 
         weeks = set()
         test_dir = self.get_test_dir(test_name)
@@ -1703,14 +1760,48 @@ class MyWindow(QtWidgets.QMainWindow):
                     week = f.name.split('_')[0]
                     weeks.add(week)
 
+        # If use_cache is enabled, also check cache directories for cache files
+        if self.use_cache:
+            # Check global cache directory first
+            self.extract_weeks_from_cache_directory(self.global_cache_directory, test_name, weeks)
+            
+            # Check user's local cache directory
+            self.extract_weeks_from_cache_directory(self.cache_directory, test_name, weeks)
+
         self.process_weeks = False
-        for w in sorted(weeks):
+        sorted_weeks = sorted(weeks)
+        weeks_were_restored = False
+        
+        for w in sorted_weeks:
             week_item = QtWidgets.QListWidgetItem(w)
             self.weeks_list.addItem(week_item)
             if w in prev_selected_weeks:
                 week_item.setSelected(True)
+                weeks_were_restored = True
+        
+        # If this is a new test or no weeks were restored, select only the last 10 by default
+        should_scroll_to_bottom = False
+        if (is_new_test or not weeks_were_restored) and len(sorted_weeks) > 0:
+            # Clear any restored selections if this is a new test
+            if is_new_test:
+                for i in range(len(sorted_weeks)):
+                    self.weeks_list.item(i).setSelected(False)
+            
+            start_index = max(0, len(sorted_weeks) - 10)
+            for i in range(start_index, len(sorted_weeks)):
+                self.weeks_list.item(i).setSelected(True)
+            should_scroll_to_bottom = True
+        
         self.process_weeks = True
         self.selection_changed_weeks()
+        
+        # Scroll to bottom after everything is complete (only for new test selections)
+        if should_scroll_to_bottom:
+            def scroll_to_bottom():
+                scrollbar = self.weeks_list.verticalScrollBar()
+                scrollbar.setValue(scrollbar.maximum())
+            # Delayed scroll after UI updates settle
+            QtCore.QTimer.singleShot(100, scroll_to_bottom)
 
     def get_log_path(self, test_name, week, exec_mode):
         test_dir = self.get_test_dir(test_name)
@@ -1788,6 +1879,13 @@ class MyWindow(QtWidgets.QMainWindow):
                                    datetime.timedelta(days=1))
                     log_path = self.get_log_path(test_name, prev_day, test_type)
                     if not log_path:
+                        # If cache is enabled, try to load from cache even without log file
+                        if self.use_cache:
+                            cache_file_name = f"{test_name}_{week}_{test_type}.json"
+                            stats = self.load_stats_from_cache(cache_file_name)
+                            if stats:
+                                self.stats[week][test_type] = stats
+                                continue
                         self.stats[week][test_type] = "missing"
             if log_path:
                 if test_type not in self.stats[week]:
@@ -2132,7 +2230,6 @@ class MyWindow(QtWidgets.QMainWindow):
                             (q_image, image_width, image_height) = load_exr_as_qimage(output_image)
                             self.images_cache[output_image] = (q_image, image_width, image_height)
                     else:
-                        print(f"Error: Image file not found: {output_image}")
                         continue
 
                 image_widget = self.create_image_widget(test_type,
@@ -2469,16 +2566,10 @@ class MyWindow(QtWidgets.QMainWindow):
 
     def get_stats(self, test_name, week, log_file, log_type):
         cache_file_name = f"{test_name}_{week}_{log_type}.json"
-        cache_file_path = os.path.join(self.cache_directory, cache_file_name)
-
-        # If the cache file exists then just load it and return the stats
-        if os.path.exists(cache_file_path) and self.use_cache:
-            with open(cache_file_path) as f:
-                try:
-                    stats = json.load(f)
-                except UnicodeDecodeError:
-                    print(f"Error reading {cache_file_path}")
-                    return None
+        
+        # Try to load from cache
+        stats = self.load_stats_from_cache(cache_file_name)
+        if stats:
             return stats
 
         # If the cache file doesn't exist then parse the logs for the stats
@@ -2488,6 +2579,7 @@ class MyWindow(QtWidgets.QMainWindow):
         stats = self.parse_log_file(log_file)
 
         # Write json cache file with the stats data
+        cache_file_path = os.path.join(self.cache_directory, cache_file_name)
         if not os.path.exists(os.path.dirname(cache_file_path)):
             os.makedirs(os.path.dirname(cache_file_path))
 
