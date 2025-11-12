@@ -827,7 +827,7 @@ class MyWindow(QtWidgets.QMainWindow):
         self.setGeometry(200, 200, 1300, 800)
 
         # TODO Remove these hard coded directories - ask user on first run
-        self.profile_directory = "/rel/ci_builds/Moonbase/ProfileRuns/latest_results/profile_reports"
+        self.profile_directory = "/work/rd/raas/moonray/ProfileRuns"
         self.process_weeks = True
         self.current_test_name = None
 
