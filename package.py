@@ -23,7 +23,7 @@ rez_build_args = {
 if 'cmake' in sys.argv:
     build_system = 'cmake'
     private_build_requires = [
-        'cmake_modules-1.0'
+        'cmake_modules-1.1'
     ]
 else:
     build_system = 'setuptools'
