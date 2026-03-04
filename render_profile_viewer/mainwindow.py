@@ -76,6 +76,7 @@ def get_gigabytes_from_size(size_string, size_unit):
 class RenderProfileChartView(QtChart.QChartView):
 
     stat_signal = QtCore.pyqtSignal(str)
+    annotation_changed_signal = QtCore.pyqtSignal(list)
 
     stat_colors = dict()
 
@@ -197,6 +198,10 @@ class RenderProfileChartView(QtChart.QChartView):
         self.setRenderHint(QtGui.QPainter.Antialiasing)
 
         self.max_y = 0.0
+
+        # Annotations: list of {x, y, note} dicts
+        self.annotations = []
+        self._annotation_scatter = None
 
     def keyPressEvent(self, event):
         keymap = {
@@ -414,6 +419,133 @@ class RenderProfileChartView(QtChart.QChartView):
         vector_line_series.attachAxis(y_axis)
         xpu_line_series.attachAxis(x_axis)
         xpu_line_series.attachAxis(y_axis)
+
+    def set_annotations(self, annotations):
+        """Set the annotations list for the current chart."""
+        # Deep copy to decouple view state from persisted state
+        self.annotations = copy.deepcopy(annotations) if annotations else []
+
+    def _draw_annotations(self, chart, x_axis, y_axis):
+        """Draw annotation dots on the chart."""
+        if not self.annotations:
+            self._annotation_scatter = None
+            return
+
+        self._annotation_scatter = QtChart.QScatterSeries()
+        self._annotation_scatter.setName("Annotations")
+        self._annotation_scatter.setMarkerSize(14)
+        self._annotation_scatter.setColor(QtGui.QColor(255, 255, 0))
+        self._annotation_scatter.setBorderColor(QtGui.QColor(0, 0, 0))
+
+        for ann in self.annotations:
+            self._annotation_scatter.append(ann['x'], ann['y'])
+
+        self._annotation_scatter.hovered.connect(self._hover_annotation)
+        chart.addSeries(self._annotation_scatter)
+        self._annotation_scatter.attachAxis(x_axis)
+        self._annotation_scatter.attachAxis(y_axis)
+
+    def _hover_annotation(self, point, state):
+        """Show annotation note as tooltip and in status bar on hover."""
+        if state:
+            for ann in self.annotations:
+                if abs(ann['x'] - point.x()) < 0.5 and \
+                   abs(ann['y'] - point.y()) < max(self.max_y * 0.05, 0.1):
+                    self.stat_signal.emit(f"Annotation: {ann['note']}")
+                    QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), ann['note'])
+                    return
+        else:
+            self.stat_signal.emit("")
+            QtWidgets.QToolTip.hideText()
+
+    def mouseDoubleClickEvent(self, event):
+        """Double-click on the chart to add an annotation."""
+        if event.button() == QtCore.Qt.LeftButton and self.chart():
+            scene_pos = self.mapToScene(event.pos())
+            chart_pos = self.chart().mapToValue(scene_pos)
+
+            note, ok = QtWidgets.QInputDialog.getText(
+                self, "Add Annotation", "Enter annotation note:")
+            if ok and note.strip():
+                annotation = {
+                    'x': round(chart_pos.x(), 2),
+                    'y': round(chart_pos.y(), 2),
+                    'note': note.strip()
+                }
+                self.annotations.append(annotation)
+                self.annotation_changed_signal.emit(list(self.annotations))
+        super().mouseDoubleClickEvent(event)
+
+    def contextMenuEvent(self, event):
+        """Right-click context menu for annotation management."""
+        if not self.chart():
+            return super().contextMenuEvent(event)
+
+        scene_pos = self.mapToScene(event.pos())
+        chart_pos = self.chart().mapToValue(scene_pos)
+
+        # Find the closest annotation within the hit tolerance
+        nearest_ann = None
+        nearest_idx = -1
+        nearest_dist = float('inf')
+        x_tol = 0.5
+        y_tol = max(self.max_y * 0.05, 0.1)
+        for i, ann in enumerate(self.annotations):
+            dx = abs(ann['x'] - chart_pos.x())
+            dy = abs(ann['y'] - chart_pos.y())
+            if dx < x_tol and dy < y_tol:
+                dist = dx * dx + dy * dy
+                if dist < nearest_dist:
+                    nearest_dist = dist
+                    nearest_ann = ann
+                    nearest_idx = i
+
+        menu = QtWidgets.QMenu(self)
+
+        edit_action = None
+        delete_action = None
+        add_action = menu.addAction("Add annotation here")
+
+        if nearest_ann:
+            label = nearest_ann['note']
+            if len(label) > 40:
+                label = label[:40] + "..."
+            edit_action = menu.addAction(f'Edit: "{label}"')
+            delete_action = menu.addAction("Delete this annotation")
+
+        clear_action = None
+        if self.annotations:
+            menu.addSeparator()
+            clear_action = menu.addAction("Clear all annotations")
+
+        action = menu.exec_(event.globalPos())
+        if action is None:
+            return
+
+        if action == add_action:
+            note, ok = QtWidgets.QInputDialog.getText(
+                self, "Add Annotation", "Enter annotation note:")
+            if ok and note.strip():
+                annotation = {
+                    'x': round(chart_pos.x(), 2),
+                    'y': round(chart_pos.y(), 2),
+                    'note': note.strip()
+                }
+                self.annotations.append(annotation)
+                self.annotation_changed_signal.emit(list(self.annotations))
+        elif nearest_ann and action == edit_action:
+            note, ok = QtWidgets.QInputDialog.getText(
+                self, "Edit Annotation", "Edit annotation note:",
+                QtWidgets.QLineEdit.Normal, nearest_ann['note'])
+            if ok and note.strip():
+                self.annotations[nearest_idx]['note'] = note.strip()
+                self.annotation_changed_signal.emit(list(self.annotations))
+        elif nearest_ann and action == delete_action:
+            self.annotations.pop(nearest_idx)
+            self.annotation_changed_signal.emit(list(self.annotations))
+        elif clear_action and action == clear_action:
+            self.annotations.clear()
+            self.annotation_changed_signal.emit(list(self.annotations))
 
     @staticmethod
     def check_host_type(stats_dict, week, test_type, host_visibility_list):
@@ -657,6 +789,9 @@ class RenderProfileChartView(QtChart.QChartView):
                                  stats_dict,
                                  type_visibility_list)
 
+        # Draw user annotations on top of everything
+        self._draw_annotations(chart, x_axis, y_axis)
+
 
 class ImageTabWidget(QtWidgets.QTabWidget):
     """
@@ -710,55 +845,68 @@ class CustomTabBar(QtWidgets.QTabBar):
     def paintEvent(self, event):
         """
         This draws a custom colored tab with a rounded top which
-        tries to mimic the default tab style
+        tries to mimic the default tab style.  Derives colors from
+        the active palette so tabs remain readable in both themes.
         """
         painter = QtGui.QPainter(self)
+        palette = self.palette()
 
-        offset = 20
-        selected_color = QtGui.QColor(self.default_color.red() +   offset,
-                                      self.default_color.green() + offset,
-                                      self.default_color.blue() +  offset)
+        # Green highlight for the selected tab
+        selected_color = QtGui.QColor(60, 180, 75)
+        # Use palette-aware text colors
+        text_color = palette.color(QtGui.QPalette.ButtonText)
+        selected_text_color = palette.color(QtGui.QPalette.HighlightedText)
+        outline_color = palette.color(QtGui.QPalette.Dark)
 
         for index in range(self.count()):
-            rect = self.tabRect(index)
-            color = self.tabColors.get(index, self.default_color)
+            # Only use custom painting for tabs with custom colors or selected tabs
+            if index in self.tabColors or self.currentIndex() == index:
+                rect = self.tabRect(index)
+                color = self.tabColors.get(index, self.default_color)
 
-            radius = 8
-            path = QtGui.QPainterPath()
-            rect = rect.adjusted(0, 0, 0, radius)
+                radius = 8
+                path = QtGui.QPainterPath()
+                rect = rect.adjusted(0, 0, 0, radius)
 
-            # Draw the top-left rounded corner
-            path.moveTo(rect.topLeft())
-            path.arcTo(rect.left(), rect.top(), radius * 2, radius * 2, 180, -90)
+                # Draw the top-left rounded corner
+                path.moveTo(rect.topLeft())
+                path.arcTo(rect.left(), rect.top(), radius * 2, radius * 2, 180, -90)
 
-            # Draw the top-right rounded corner
-            path.lineTo(rect.right() - radius, rect.top())
-            path.arcTo(rect.right() - radius * 2, rect.top(), radius * 2, radius * 2, 90, -90)
+                # Draw the top-right rounded corner
+                path.lineTo(rect.right() - radius, rect.top())
+                path.arcTo(rect.right() - radius * 2, rect.top(), radius * 2, radius * 2, 90, -90)
 
-            # Draw the bottom edge (straight)
-            path.lineTo(rect.bottomRight())
-            path.lineTo(rect.bottomLeft())
-            path.closeSubpath()
+                # Draw the bottom edge (straight)
+                path.lineTo(rect.bottomRight())
+                path.lineTo(rect.bottomLeft())
+                path.closeSubpath()
 
-            # Fill the path with the tab color
-            if self.currentIndex() == index:
-                painter.setBrush(QtGui.QBrush(selected_color))
+                # Fill the path with the tab color
+                if self.currentIndex() == index:
+                    painter.setBrush(QtGui.QBrush(selected_color))
+                else:
+                    painter.setBrush(QtGui.QBrush(color))
                 painter.setPen(QtCore.Qt.NoPen)
                 painter.drawPath(path)
+
+                # Draw outline
+                painter.setPen(QtGui.QPen(outline_color, 1))
+                painter.setBrush(QtCore.Qt.NoBrush)
+                painter.drawPath(path)
+
+                # Draw text with palette-aware color
+                if self.currentIndex() == index:
+                    painter.setPen(selected_text_color)
+                else:
+                    painter.setPen(text_color)
+
+                text = self.tabText(index)
+                painter.drawText(rect, QtCore.Qt.AlignCenter, text)
             else:
-                painter.setBrush(QtGui.QBrush(color))
-                painter.setPen(QtCore.Qt.NoPen)
-                painter.drawPath(path)
-
-            # Draw black outline
-            painter.setPen(QtGui.QPen(QtCore.Qt.black, 1))
-            painter.setBrush(QtCore.Qt.NoBrush)
-            painter.drawPath(path)
-
-            painter.setPen(QtCore.Qt.white)
-
-            text = self.tabText(index)
-            painter.drawText(rect, QtCore.Qt.AlignCenter, text)
+                # Use default Qt rendering for tabs without custom colors
+                option = QtWidgets.QStyleOptionTab()
+                self.initStyleOption(option, index)
+                self.style().drawControl(QtWidgets.QStyle.CE_TabBarTab, option, painter, self)
 
 class CustomTabWidget(QtWidgets.QTabWidget):
     def __init__(self):
@@ -982,6 +1130,11 @@ class MyWindow(QtWidgets.QMainWindow):
         self.render_profile_chart = RenderProfileChartView()
         self.render_profile_chart.stat_signal.connect(self.statusBar().showMessage)
 
+        # Annotations - stored per test name, persisted to JSON in the log/work directory
+        self.annotations = {}
+        self._load_annotations()
+        self.render_profile_chart.annotation_changed_signal.connect(self._on_annotations_changed)
+
         self.chart_label_angle = 90
         self.explicit_chart_height = 100
 
@@ -1197,11 +1350,21 @@ class MyWindow(QtWidgets.QMainWindow):
         image_scale_label = QtWidgets.QLabel("Image Scale")
         image_scale_widget.layout().addWidget(image_scale_label)
         image_scale_widget.layout().addWidget(self.image_size_spin_box)
-        help_label = QtWidgets.QLabel("Tip: Zoom with mouse wheel, Pan with left mouse, PgUp/PgDown changes tabs")
+        help_label = QtWidgets.QLabel("Tip: Zoom with mouse wheel, Pan with left mouse, PgUp/PgDn changes week tabs, Ctrl+PgUp/PgDn changes test type tabs")
         image_scale_widget.layout().addWidget(help_label)
         image_scale_widget.layout().addStretch()
 
         self.image_tab_widget = QtWidgets.QTabWidget()
+        self.image_tab_widget.setTabBar(CustomTabBar())
+
+        # Add shortcuts for cycling test type tabs
+        next_type_tab = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+PgDown"), self.image_tab_widget)
+        next_type_tab.activated.connect(
+            lambda: self.image_tab_widget.setCurrentIndex((self.image_tab_widget.currentIndex() + 1) % self.image_tab_widget.count()))
+
+        prev_type_tab = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+PgUp"), self.image_tab_widget)
+        prev_type_tab.activated.connect(
+            lambda: self.image_tab_widget.setCurrentIndex((self.image_tab_widget.currentIndex() - 1) % self.image_tab_widget.count()))
 
         self.image_widget.layout().addWidget(image_diff_widget)
         self.image_widget.layout().addWidget(image_scale_widget)
@@ -1414,6 +1577,119 @@ class MyWindow(QtWidgets.QMainWindow):
             # Select first row and show chars
             self.tests_list.setCurrentRow(0)
             self.selection_changed_tests()
+
+    def _get_annotations_file(self):
+        """Get the path to the annotations JSON file.
+
+        In log-file mode, stores annotations.json alongside the log files.
+        Otherwise, stores in the user's work directory.
+        """
+        if self.log_file_mode and hasattr(self, 'log_files') and self.log_files:
+            log_dir = os.path.dirname(os.path.abspath(self.log_files[0]))
+            return os.path.join(log_dir, "annotations.json")
+        return os.path.join(self.work_directory, "annotations.json")
+
+    @staticmethod
+    def _normalize_annotations_structure(data):
+        """Validate and normalize the annotations JSON structure.
+
+        Expects a dict mapping test names to lists of {x, y, note} objects.
+        Coerces x/y to float and note to string. Invalid entries are skipped.
+        """
+        if not isinstance(data, dict):
+            return {}
+        normalized = {}
+        for test_name, annotations in data.items():
+            if not isinstance(annotations, list):
+                continue
+            normalized_list = []
+            for ann in annotations:
+                if not isinstance(ann, dict):
+                    continue
+                try:
+                    x_raw = ann.get('x')
+                    y_raw = ann.get('y')
+                    if x_raw is None or y_raw is None:
+                        continue
+                    x = float(x_raw)
+                    y = float(y_raw)
+                except (TypeError, ValueError):
+                    continue
+                note = ann.get('note')
+                if note is None:
+                    note = ""
+                elif not isinstance(note, str):
+                    note = str(note)
+                normalized_list.append({'x': x, 'y': y, 'note': note})
+            if normalized_list:
+                normalized[test_name] = normalized_list
+        return normalized
+
+    def _load_annotations(self):
+        """Load annotations from the annotations JSON file."""
+        annotations_file = self._get_annotations_file()
+        if os.path.exists(annotations_file):
+            try:
+                with open(annotations_file, 'r') as f:
+                    raw_data = json.load(f)
+                self.annotations = self._normalize_annotations_structure(raw_data)
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"Error loading annotations from {annotations_file}: {e}")
+                self.annotations = {}
+        else:
+            self.annotations = {}
+
+    def _save_annotations(self):
+        """Save annotations to the annotations JSON file."""
+        annotations_file = self._get_annotations_file()
+        try:
+            with open(annotations_file, 'w') as f:
+                json.dump(self.annotations, f, indent=4)
+        except IOError as e:
+            print(f"Error saving annotations to {annotations_file}: {e}")
+
+    def _on_annotations_changed(self, annotations):
+        """Called when annotations are added/edited/deleted in the chart view."""
+        test_name = self._get_current_test_name()
+        if test_name:
+            if annotations:
+                self.annotations[test_name] = annotations
+            elif test_name in self.annotations:
+                del self.annotations[test_name]
+            self._save_annotations()
+            self.update_chart()
+
+    def _get_current_test_name(self):
+        """Get a stable annotation storage key for the current selection.
+
+        Uses UserRole data ('name') when available so the key does not
+        change when 'Show full paths' is toggled.
+        """
+        try:
+            if self.log_file_mode:
+                selected = self.logs_list.selectedItems()
+                if len(selected) > 1:
+                    # Build a deterministic key from sorted stable names
+                    names = []
+                    for item in selected:
+                        user_data = item.data(QtCore.Qt.UserRole)
+                        if isinstance(user_data, dict) and 'name' in user_data:
+                            names.append(user_data['name'])
+                        else:
+                            names.append(item.text())
+                    return "_multi_log_:" + "|".join(sorted(names))
+                elif len(selected) == 1:
+                    item = selected[0]
+                    user_data = item.data(QtCore.Qt.UserRole)
+                    if isinstance(user_data, dict) and 'name' in user_data:
+                        return user_data['name']
+                    return item.text()
+            else:
+                if hasattr(self, 'tests_list') and self.tests_list.selectedItems():
+                    return self.tests_list.selectedItems()[0].text()
+        except (AttributeError, IndexError):
+            pass
+        return None
 
     def cleanup(self):
         if self.temp_dir:
@@ -2125,6 +2401,17 @@ class MyWindow(QtWidgets.QMainWindow):
             for area in scroll_areas:
                 area.horizontalScrollBar().setValue(value)
 
+    def sync_week_tabs(self, index):
+        """Synchronize week tab selection across all test types"""
+        # Block signals to prevent infinite recursion
+        for test_type in self.image_tabs:
+            if self.image_tabs[test_type]:
+                self.image_tabs[test_type].blockSignals(True)
+                # Only set index if it's valid for this test type
+                if index < self.image_tabs[test_type].count():
+                    self.image_tabs[test_type].setCurrentIndex(index)
+                self.image_tabs[test_type].blockSignals(False)
+
     def create_image_widget(self,
                             test_type,
                             output_image,
@@ -2178,10 +2465,12 @@ class MyWindow(QtWidgets.QMainWindow):
 
         # Remember the current tabs to restore at the end of this function
         current_tab_indices = {"scalar":0, "vector":0, "xpu":0}
+        had_previous_tabs = {"scalar": False, "vector": False, "xpu": False}
         if self.image_tabs:
             for test_type in self.image_tabs:
-                if self.image_tabs[test_type]:
-                        current_tab_indices[test_type] = self.image_tabs[test_type].currentIndex()
+                if self.image_tabs[test_type] and self.image_tabs[test_type].count() > 0:
+                    had_previous_tabs[test_type] = True
+                    current_tab_indices[test_type] = self.image_tabs[test_type].currentIndex()
 
         self.scroll_areas = {"scalar": [], "vector": [], "xpu": []}  # Store scroll areas
         self.image_tab_widget.clear()
@@ -2256,10 +2545,19 @@ class MyWindow(QtWidgets.QMainWindow):
             if tab is not None:
                 self.image_tab_widget.addTab(tab, test_type.capitalize())
 
-        # Restore current tab
+        # Restore current tab (or set to last tab if first time)
         for test_type in self.image_tabs:
             if self.image_tabs[test_type]:
-                self.image_tabs[test_type].setCurrentIndex(current_tab_indices[test_type])
+                # If no previous tabs, default to the last week instead of first
+                if not had_previous_tabs[test_type] and self.image_tabs[test_type].count() > 0:
+                    self.image_tabs[test_type].setCurrentIndex(self.image_tabs[test_type].count() - 1)
+                else:
+                    self.image_tabs[test_type].setCurrentIndex(current_tab_indices[test_type])
+
+        # Connect signals to synchronize week tabs across test types
+        for test_type in self.image_tabs:
+            if self.image_tabs[test_type]:
+                self.image_tabs[test_type].currentChanged.connect(self.sync_week_tabs)
 
     def show_selected_images(self):
         cmd = ['iv']
@@ -2389,6 +2687,11 @@ class MyWindow(QtWidgets.QMainWindow):
                 test_name = self.logs_list.selectedItems()[0].text()
         else:
             test_name = self.tests_list.selectedItems()[0].text()
+
+        # Set annotations for the current test using a stable key
+        annotation_key = self._get_current_test_name()
+        current_annotations = self.annotations.get(annotation_key, []) if annotation_key else []
+        self.render_profile_chart.set_annotations(current_annotations)
 
         self.render_profile_chart.update_chart(test_name,
                                                my_stats,
