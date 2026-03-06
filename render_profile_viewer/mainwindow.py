@@ -199,9 +199,12 @@ class RenderProfileChartView(QtChart.QChartView):
 
         self.max_y = 0.0
 
-        # Annotations: list of {x, y, note} dicts
+        # Annotations: list of {week, y, note} dicts
         self.annotations = []
         self._annotation_scatter = None
+        # Mapping from category index to week key, built during update_chart
+        self._category_week_keys = []
+        self._scatter_to_annotation = []
 
     def keyPressEvent(self, event):
         keymap = {
@@ -426,9 +429,15 @@ class RenderProfileChartView(QtChart.QChartView):
         self.annotations = copy.deepcopy(annotations) if annotations else []
 
     def _draw_annotations(self, chart, x_axis, y_axis):
-        """Draw annotation dots on the chart."""
-        if not self.annotations:
+        """Draw annotation dots on the chart.
+
+        Each annotation is anchored to a week key and appears once per week
+        at the position of the first matching category (so only one dot is
+        shown even when multiple test types are visible for that week).
+        """
+        if not self.annotations or not self._category_week_keys:
             self._annotation_scatter = None
+            self._scatter_to_annotation = []
             return
 
         self._annotation_scatter = QtChart.QScatterSeries()
@@ -437,8 +446,26 @@ class RenderProfileChartView(QtChart.QChartView):
         self._annotation_scatter.setColor(QtGui.QColor(255, 255, 0))
         self._annotation_scatter.setBorderColor(QtGui.QColor(0, 0, 0))
 
-        for ann in self.annotations:
-            self._annotation_scatter.append(ann['x'], ann['y'])
+        # Build a lookup of week_key -> first category index
+        week_to_first_cat = {}
+        for cat_idx, week_key in enumerate(self._category_week_keys):
+            if week_key not in week_to_first_cat:
+                week_to_first_cat[week_key] = cat_idx
+
+        self._scatter_to_annotation = []
+        y_max = y_axis.max()
+        for ann_idx, ann in enumerate(self.annotations):
+            cat_idx = week_to_first_cat.get(ann['week'])
+            if cat_idx is not None:
+                # Clamp y so the dot stays within the visible chart area
+                y = min(ann['y'], y_max) if y_max > 0 else ann['y']
+                self._annotation_scatter.append(cat_idx, y)
+                self._scatter_to_annotation.append(ann_idx)
+
+        if self._annotation_scatter.count() == 0:
+            self._annotation_scatter = None
+            self._scatter_to_annotation = []
+            return
 
         self._annotation_scatter.hovered.connect(self._hover_annotation)
         chart.addSeries(self._annotation_scatter)
@@ -447,16 +474,28 @@ class RenderProfileChartView(QtChart.QChartView):
 
     def _hover_annotation(self, point, state):
         """Show annotation note as tooltip and in status bar on hover."""
-        if state:
-            for ann in self.annotations:
-                if abs(ann['x'] - point.x()) < 0.5 and \
-                   abs(ann['y'] - point.y()) < max(self.max_y * 0.05, 0.1):
+        if state and self._annotation_scatter and self._scatter_to_annotation:
+            for i in range(self._annotation_scatter.count()):
+                p = self._annotation_scatter.at(i)
+                if abs(p.x() - point.x()) < 0.01 and abs(p.y() - point.y()) < 0.01:
+                    ann_idx = self._scatter_to_annotation[i]
+                    ann = self.annotations[ann_idx]
                     self.stat_signal.emit(f"Annotation: {ann['note']}")
                     QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), ann['note'])
                     return
-        else:
+        if not state:
             self.stat_signal.emit("")
             QtWidgets.QToolTip.hideText()
+
+    def _snap_to_week(self, chart_x):
+        """Snap a chart x coordinate to the nearest category's week key.
+
+        Returns the week key string, or None if no categories exist.
+        """
+        if not self._category_week_keys:
+            return None
+        idx = max(0, min(round(chart_x), len(self._category_week_keys) - 1))
+        return self._category_week_keys[idx]
 
     def mouseDoubleClickEvent(self, event):
         """Double-click on the chart to add an annotation."""
@@ -464,11 +503,16 @@ class RenderProfileChartView(QtChart.QChartView):
             scene_pos = self.mapToScene(event.pos())
             chart_pos = self.chart().mapToValue(scene_pos)
 
+            week_key = self._snap_to_week(chart_pos.x())
+            if week_key is None:
+                super().mouseDoubleClickEvent(event)
+                return
+
             note, ok = QtWidgets.QInputDialog.getText(
                 self, "Add Annotation", "Enter annotation note:")
             if ok and note.strip():
                 annotation = {
-                    'x': round(chart_pos.x(), 2),
+                    'week': week_key,
                     'y': round(chart_pos.y(), 2),
                     'note': note.strip()
                 }
@@ -484,19 +528,18 @@ class RenderProfileChartView(QtChart.QChartView):
         scene_pos = self.mapToScene(event.pos())
         chart_pos = self.chart().mapToValue(scene_pos)
 
-        # Find the closest annotation within the hit tolerance
+        clicked_week = self._snap_to_week(chart_pos.x())
+
+        # Find the closest annotation at this week within the y tolerance
         nearest_ann = None
         nearest_idx = -1
         nearest_dist = float('inf')
-        x_tol = 0.5
         y_tol = max(self.max_y * 0.05, 0.1)
         for i, ann in enumerate(self.annotations):
-            dx = abs(ann['x'] - chart_pos.x())
-            dy = abs(ann['y'] - chart_pos.y())
-            if dx < x_tol and dy < y_tol:
-                dist = dx * dx + dy * dy
-                if dist < nearest_dist:
-                    nearest_dist = dist
+            if ann['week'] == clicked_week:
+                dy = abs(ann['y'] - chart_pos.y())
+                if dy < y_tol and dy < nearest_dist:
+                    nearest_dist = dy
                     nearest_ann = ann
                     nearest_idx = i
 
@@ -523,11 +566,14 @@ class RenderProfileChartView(QtChart.QChartView):
             return
 
         if action == add_action:
+            week_key = clicked_week
+            if week_key is None:
+                return
             note, ok = QtWidgets.QInputDialog.getText(
                 self, "Add Annotation", "Enter annotation note:")
             if ok and note.strip():
                 annotation = {
-                    'x': round(chart_pos.x(), 2),
+                    'week': week_key,
                     'y': round(chart_pos.y(), 2),
                     'note': note.strip()
                 }
@@ -601,6 +647,9 @@ class RenderProfileChartView(QtChart.QChartView):
         self.setChart(chart)
 
         if len(stats_dict) == 0:
+            self._category_week_keys = []
+            self._annotation_scatter = None
+            self._scatter_to_annotation = []
             return
 
         stacked_bar_series = QtChart.QStackedBarSeries()
@@ -612,6 +661,16 @@ class RenderProfileChartView(QtChart.QChartView):
             stat_names = self.stat_colors.keys()
 
         categories = list()
+        self._category_week_keys = []
+        _seen_categories = set()
+
+        def _track_category(label, week_key):
+            """Append to categories and track the week for each unique category."""
+            categories.append(label)
+            if label not in _seen_categories:
+                _seen_categories.add(label)
+                self._category_week_keys.append(week_key)
+
         for stat_name in stat_names:
            if not stat_visibility_list or (not show_pixel_samples and stat_name not in stat_visibility_list):
                 continue
@@ -686,7 +745,7 @@ class RenderProfileChartView(QtChart.QChartView):
 
                        # Categories (bottom of chart)
                        if missing:
-                           categories.append(f"MISSING! - {week} ({test_type})")
+                           _track_category(f"MISSING! - {week} ({test_type})", week)
                        elif show_host_names:
                            host_name = 'Unknown'
                            if 'host_name' in stats_dict[week][test_type]:
@@ -695,19 +754,19 @@ class RenderProfileChartView(QtChart.QChartView):
                               'fallback' in stats_dict[week][test_type] and \
                               'fallback_mode' in stats_dict[week][test_type]:
 
-                               categories.append(f"{host_name}: {week} "
-                                                 f"({test_type} -> {stats_dict[week][test_type]['fallback_mode']})")
+                               _track_category(f"{host_name}: {week} "
+                                                 f"({test_type} -> {stats_dict[week][test_type]['fallback_mode']})", week)
                            else:
-                               categories.append(f"{host_name}: {week} ({test_type})")
+                               _track_category(f"{host_name}: {week} ({test_type})", week)
                        else:
                            if show_fallback and \
                               'fallback' in stats_dict[week][test_type] and \
                               'fallback_mode' in stats_dict[week][test_type]:
 
-                               categories.append(f"{week} "
-                                                 f"({test_type} -> {stats_dict[week][test_type]['fallback_mode']})")
+                               _track_category(f"{week} "
+                                                 f"({test_type} -> {stats_dict[week][test_type]['fallback_mode']})", week)
                            else:
-                               categories.append(f"{week} ({test_type})")
+                               _track_category(f"{week} ({test_type})", week)
 
                        # Check for fallback
                        fallback = False
@@ -851,7 +910,7 @@ class CustomTabBar(QtWidgets.QTabBar):
         painter = QtGui.QPainter(self)
         palette = self.palette()
 
-        # Green highlight for the selected tab
+        # Green highlight for the selected tab (intentionally not palette-derived)
         selected_color = QtGui.QColor(60, 180, 75)
         # Use palette-aware text colors
         text_color = palette.color(QtGui.QPalette.ButtonText)
@@ -1593,8 +1652,8 @@ class MyWindow(QtWidgets.QMainWindow):
     def _normalize_annotations_structure(data):
         """Validate and normalize the annotations JSON structure.
 
-        Expects a dict mapping test names to lists of {x, y, note} objects.
-        Coerces x/y to float and note to string. Invalid entries are skipped.
+        Expects a dict mapping test names to lists of {week, y, note} objects.
+        Coerces y to float and note to string. Invalid entries are skipped.
         """
         if not isinstance(data, dict):
             return {}
@@ -1607,11 +1666,11 @@ class MyWindow(QtWidgets.QMainWindow):
                 if not isinstance(ann, dict):
                     continue
                 try:
-                    x_raw = ann.get('x')
+                    week_raw = ann.get('week')
                     y_raw = ann.get('y')
-                    if x_raw is None or y_raw is None:
+                    if week_raw is None or y_raw is None:
                         continue
-                    x = float(x_raw)
+                    week = str(week_raw)
                     y = float(y_raw)
                 except (TypeError, ValueError):
                     continue
@@ -1620,7 +1679,7 @@ class MyWindow(QtWidgets.QMainWindow):
                     note = ""
                 elif not isinstance(note, str):
                     note = str(note)
-                normalized_list.append({'x': x, 'y': y, 'note': note})
+                normalized_list.append({'week': week, 'y': y, 'note': note})
             if normalized_list:
                 normalized[test_name] = normalized_list
         return normalized
