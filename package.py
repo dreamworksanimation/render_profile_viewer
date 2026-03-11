@@ -49,6 +49,8 @@ def test_arguments():
 def commands():
     env.PYTHONPATH.append("{root}")
     env.PATH.append("{root}/bin")
+    env.RPV_ANNOTATIONS_DIR = "/work/gshad/moonshine/render_profile_viewer"
+    env.RPV_PROFILE_DIR = "/work/rd/raas/moonray/ProfileRuns/latest_results/profile_reports"
 
 with scope("config") as config:
     config.package_filter = []

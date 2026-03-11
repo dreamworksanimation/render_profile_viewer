@@ -1033,8 +1033,9 @@ class MyWindow(QtWidgets.QMainWindow):
 
         self.setGeometry(200, 200, 1300, 800)
 
-        # TODO Remove these hard coded directories - ask user on first run
-        self.profile_directory = "/work/rd/raas/moonray/ProfileRuns/latest_results/profile_reports"
+        self.profile_directory = os.environ.get(
+            "RPV_PROFILE_DIR",
+            "/work/rd/raas/moonray/ProfileRuns/latest_results/profile_reports")
         self.process_weeks = True
         self.current_test_name = None
 
@@ -1641,12 +1642,17 @@ class MyWindow(QtWidgets.QMainWindow):
         """Get the path to the annotations JSON file.
 
         In log-file mode, stores annotations.json alongside the log files.
-        Otherwise, stores in the user's work directory.
+        Otherwise, stores in a shared writable directory so annotations
+        are visible to all users.
         """
         if self.log_file_mode and hasattr(self, 'log_files') and self.log_files:
             log_dir = os.path.dirname(os.path.abspath(self.log_files[0]))
             return os.path.join(log_dir, "annotations.json")
-        return os.path.join(self.work_directory, "annotations.json")
+        shared_dir = os.environ.get("RPV_ANNOTATIONS_DIR",
+                                    "/work/gshad/moonshine/render_profile_viewer")
+        if not os.path.exists(shared_dir):
+            os.makedirs(shared_dir)
+        return os.path.join(shared_dir, "annotations.json")
 
     @staticmethod
     def _normalize_annotations_structure(data):
