@@ -35,7 +35,11 @@ def load_exr_as_qimage(file_path, gamma=2.2):
     input_file.close()
 
     # Convert the image to numpy array and normalize to 0-255 range
-    image_array = np.array(image)
+    image_array = np.array(image, dtype=np.float64)
+
+    # Replace NaN/Inf with 0 and clamp negatives before gamma correction
+    image_array = np.nan_to_num(image_array, nan=0.0, posinf=1.0, neginf=0.0)
+    image_array = np.clip(image_array, 0.0, None)
 
     # Apply gamma correction
     image_array = np.power(image_array, 1/gamma)
@@ -644,9 +648,9 @@ class RenderProfileChartView(QtChart.QChartView):
         title_font = chart.titleFont()
         title_font.setPointSize(font_size)
         chart.setTitleFont(title_font)
-        self.setChart(chart)
 
         if len(stats_dict) == 0:
+            self.setChart(chart)
             self._category_week_keys = []
             self._annotation_scatter = None
             self._scatter_to_annotation = []
@@ -851,6 +855,9 @@ class RenderProfileChartView(QtChart.QChartView):
         # Draw user annotations on top of everything
         self._draw_annotations(chart, x_axis, y_axis)
 
+        # Set the fully-built chart in one step to avoid visual flicker
+        self.setChart(chart)
+
 
 class ImageTabWidget(QtWidgets.QTabWidget):
     """
@@ -1027,6 +1034,16 @@ class MyWindow(QtWidgets.QMainWindow):
         if logs:
             self.log_files = logs
             self.log_file_mode = True
+
+        # Debounce timer for test selection changes
+        self._test_selection_timer = QtCore.QTimer()
+        self._test_selection_timer.setSingleShot(True)
+        self._test_selection_timer.setInterval(150)
+        self._test_selection_timer.timeout.connect(self._do_selection_changed_tests)
+
+        # Lazy image loading state:
+        # (test_type, tab_index) -> {"output_image": str, "scroll_x": int, "scroll_y": int}
+        self._pending_image_loads = {}
 
         self.temp_dir = tempfile.mkdtemp()
         QtCore.QCoreApplication.instance().aboutToQuit.connect(self.cleanup)
@@ -1334,6 +1351,7 @@ class MyWindow(QtWidgets.QMainWindow):
 
         # Image Tab
         self.image_tabs = None
+        self._images_stale = False  # True when stats changed but images not yet rebuilt
 
         self.image_size_spin_box = QtWidgets.QDoubleSpinBox()
         self.image_size_spin_box.setFixedWidth(50)
@@ -1435,6 +1453,11 @@ class MyWindow(QtWidgets.QMainWindow):
         logs_widget.setLayout(QtWidgets.QVBoxLayout())
         logs_widget.layout().addWidget(QtWidgets.QLabel("Select a week to display log files"))
         self.chart_image_log_tab_widget.addTab(logs_widget, "Logs")
+        self._images_tab_index = self.chart_image_log_tab_widget.indexOf(self.image_widget)
+        self._logs_tab_index = self.chart_image_log_tab_widget.indexOf(logs_widget)
+        self._logs_stale = False
+        self._pending_log_widgets = []  # list of (log_path, test_type)
+        self.chart_image_log_tab_widget.currentChanged.connect(self._on_main_tab_changed)
 
         # Font size
         log_font_size_widget = QtWidgets.QWidget()
@@ -1636,7 +1659,7 @@ class MyWindow(QtWidgets.QMainWindow):
         else:
             # Select first row and show chars
             self.tests_list.setCurrentRow(0)
-            self.selection_changed_tests()
+            self._do_selection_changed_tests()
 
     def _get_annotations_file(self):
         """Get the path to the annotations JSON file.
@@ -1805,7 +1828,7 @@ class MyWindow(QtWidgets.QMainWindow):
 
         self.populate_test_list()
         self.tests_list.setCurrentRow(0)
-        self.selection_changed_tests()
+        self._do_selection_changed_tests()
         
     def set_profile_dir(self):
         file_dialog = QtWidgets.QFileDialog(self)
@@ -1817,7 +1840,7 @@ class MyWindow(QtWidgets.QMainWindow):
             self.setWindowTitle(f"Render Profile Viewer {__version__} -- (Profile directory: {self.profile_directory})")
             self.populate_test_list()
             self.tests_list.setCurrentRow(0)
-            self.selection_changed_tests()
+            self._do_selection_changed_tests()
             self.weeks_list.selectAll()
             self.selection_changed_weeks()
 
@@ -2077,6 +2100,14 @@ class MyWindow(QtWidgets.QMainWindow):
                         weeks.add(week)
 
     def selection_changed_tests(self):
+        # Debounce: restart the timer on each selection change so that
+        # rapid clicks only trigger one expensive update.
+        self._test_selection_timer.start()
+
+    def _do_selection_changed_tests(self):
+        # Stop the debounce timer in case this was called directly
+        self._test_selection_timer.stop()
+
         # Reset zoom
         self.image_size_spin_box.setValue(1.0)
 
@@ -2232,7 +2263,7 @@ class MyWindow(QtWidgets.QMainWindow):
                 if test_type not in self.stats[week]:
                     self.stats[week][test_type] = self.get_stats(test_name, week, log_path, test_type)
                 if i == 0:
-                    self.create_log_widget(log_path, test_type)
+                    self._pending_log_widgets.append((log_path, test_type))
 
     def apply_ansi_escape_codes(self, log_browser, text):
         cursor = log_browser.textCursor()
@@ -2364,6 +2395,8 @@ class MyWindow(QtWidgets.QMainWindow):
         self.log_vector_tab = None
         self.log_xpu_tab = None
         self.log_tab_widget.clear()
+        self._pending_log_widgets = []
+        self._logs_stale = False
 
         test_name = self.tests_list.selectedItems()[0].text()
         if self.scalar_checkbox.isChecked():
@@ -2373,13 +2406,18 @@ class MyWindow(QtWidgets.QMainWindow):
         if self.xpu_checkbox.isChecked():
             self.process_logs(test_name, 'xpu')
 
+        # Defer log widget creation unless the Logs tab is currently visible
+        self._logs_stale = True
+        if self.chart_image_log_tab_widget.currentIndex() == self._logs_tab_index:
+            self._flush_log_widgets()
+
         # Set initial font size
         self.change_logs_font_size(self.log_font_size_spinner.value())
 
         self.update_chart(resize=True)
 
         try:
-            self.update_images()
+            self._request_update_images()
         except (RuntimeError, KeyError) as e:
             print(f"Caught an exception: {e}")
 
@@ -2437,7 +2475,7 @@ class MyWindow(QtWidgets.QMainWindow):
         self.update_chart(resize=True)
 
         try:
-            self.update_images()
+            self._request_update_images()
         except (RuntimeError, KeyError) as e:
             print(f"Caught an exception: {e}")
 
@@ -2524,6 +2562,89 @@ class MyWindow(QtWidgets.QMainWindow):
                     break
         return (scroll_x, scroll_y)
 
+    def _load_image_for_tab(self, test_type, tab_index):
+        """Lazily load an image when its tab becomes visible."""
+        tab_widget = self.image_tabs.get(test_type)
+        if tab_widget is None:
+            return
+        key = (test_type, tab_index)
+        if key not in self._pending_image_loads:
+            return
+
+        info = self._pending_image_loads.pop(key)
+        output_image = info['output_image']
+        scroll_x = info['scroll_x']
+        scroll_y = info['scroll_y']
+
+        q_image = None
+        image_width = 0
+        image_height = 0
+        if output_image in self.images_cache:
+            (q_image, image_width, image_height) = self.images_cache[output_image]
+        elif os.path.exists(output_image):
+            (q_image, image_width, image_height) = load_exr_as_qimage(output_image)
+            self.images_cache[output_image] = (q_image, image_width, image_height)
+        else:
+            return
+
+        # Replace the placeholder widget with the real image
+        widget = self.create_image_widget(test_type,
+                                          output_image,
+                                          q_image,
+                                          image_width,
+                                          image_height,
+                                          scroll_x,
+                                          scroll_y)
+        tab_text = tab_widget.tabText(tab_index)
+        tab_color = tab_widget.tabBar().tabTextColor(tab_index)
+        # Block signals to prevent removeTab/insertTab from cascading
+        # through currentChanged → loading every other tab
+        tab_widget.blockSignals(True)
+        tab_widget.removeTab(tab_index)
+        tab_widget.insertTab(tab_index, widget, tab_text)
+        if tab_color.isValid():
+            tab_widget.tabBar().setTabTextColor(tab_index, tab_color)
+        tab_widget.setCurrentIndex(tab_index)
+        tab_widget.blockSignals(False)
+
+    def _on_image_tab_changed(self, test_type, index):
+        """Called when a week tab is selected; loads the image if pending."""
+        self._load_image_for_tab(test_type, index)
+        self.sync_week_tabs(index)
+
+    def _request_update_images(self):
+        """Mark images as needing rebuild; only do the work if the Images tab is visible."""
+        self._images_stale = True
+        if self.chart_image_log_tab_widget.currentIndex() == self._images_tab_index:
+            self._flush_update_images()
+
+    def _flush_update_images(self):
+        """Actually rebuild image tabs if they are stale."""
+        if not self._images_stale:
+            return
+        self._images_stale = False
+        self.update_images()
+
+    def _on_main_tab_changed(self, index):
+        """When the user switches to the Images or Logs tab, rebuild if needed."""
+        if index == self._images_tab_index:
+            try:
+                self._flush_update_images()
+            except (RuntimeError, KeyError) as e:
+                print(f"Caught an exception: {e}")
+        elif index == self._logs_tab_index:
+            self._flush_log_widgets()
+
+    def _flush_log_widgets(self):
+        """Actually create log widgets if they are pending."""
+        if not self._logs_stale:
+            return
+        self._logs_stale = False
+        for log_path, test_type in self._pending_log_widgets:
+            self.create_log_widget(log_path, test_type)
+        self._pending_log_widgets = []
+        self.change_logs_font_size(self.log_font_size_spinner.value())
+
     def update_images(self):
         # Get previous scroll positions
         (scroll_x, scroll_y) = self.get_scroll_positions()
@@ -2539,6 +2660,7 @@ class MyWindow(QtWidgets.QMainWindow):
 
         self.scroll_areas = {"scalar": [], "vector": [], "xpu": []}  # Store scroll areas
         self.image_tab_widget.clear()
+        self._pending_image_loads = {}
 
         self.image_tabs = {
             'scalar': self.create_tab_widget("scalar") if self.scalar_checkbox.isChecked() else None,
@@ -2548,8 +2670,6 @@ class MyWindow(QtWidgets.QMainWindow):
 
         for week in self.stats:
             for test_type in self.stats[week]:
-                QtCore.QCoreApplication.processEvents()
-
                 # Check if the current test type is active
                 if self.image_tabs.get(test_type) is None:
                     continue
@@ -2557,7 +2677,7 @@ class MyWindow(QtWidgets.QMainWindow):
                 if 'output_image' not in self.stats[week][test_type]:
                     continue
 
-                # Add failed diff image if it exists
+                # Add failed diff image if it exists (these are already loaded)
                 if test_type in self.diff_cache and week in self.diff_cache[test_type]:
                     (q_image, image_width, image_height) = self.diff_cache[test_type][week]
                     image_widget = self.create_image_widget(test_type,
@@ -2571,39 +2691,49 @@ class MyWindow(QtWidgets.QMainWindow):
                     # Create tab with a red color
                     self.image_tabs[test_type].addColoredTab(image_widget, "FAIL", "red")
 
-                # Add main image
                 output_image = self.stats[week][test_type]['output_image']
-                q_image = None
-                image_width = 0
-                image_height = 0
-                if output_image in self.images_cache:
-                    (q_image, image_width, image_height) = self.images_cache[output_image]
-                else:
-                    if os.path.exists(output_image):
-                        if not output_image in self.images_cache:
-                            (q_image, image_width, image_height) = load_exr_as_qimage(output_image)
-                            self.images_cache[output_image] = (q_image, image_width, image_height)
-                    else:
-                        continue
 
-                image_widget = self.create_image_widget(test_type,
-                                                        output_image,
-                                                        q_image,
-                                                        image_width,
-                                                        image_height,
-                                                        scroll_x,
-                                                        scroll_y)
+                # Skip if the image file doesn't exist and isn't cached
+                if output_image not in self.images_cache and not os.path.exists(output_image):
+                    continue
 
                 if self.log_file_mode:
                     tab_name = self.stats[week][test_type]['display_name']
                 else:
                     tab_name = f"{week}"
 
+                # If the image is already cached, create the widget immediately
+                if output_image in self.images_cache:
+                    (q_image, image_width, image_height) = self.images_cache[output_image]
+                    image_widget = self.create_image_widget(test_type,
+                                                            output_image,
+                                                            q_image,
+                                                            image_width,
+                                                            image_height,
+                                                            scroll_x,
+                                                            scroll_y)
+                else:
+                    # Create a lightweight placeholder; actual load happens on tab switch
+                    image_widget = QtWidgets.QWidget()
+                    image_widget.setLayout(QtWidgets.QVBoxLayout())
+                    placeholder = QtWidgets.QLabel("Loading...")
+                    placeholder.setAlignment(QtCore.Qt.AlignCenter)
+                    image_widget.layout().addWidget(placeholder)
+
                 # Use current button color from light/dark theme for tab color
                 app = QtWidgets.QApplication.instance()
                 palette = app.palette()
                 col = palette.color(QtGui.QPalette.Button)
                 self.image_tabs[test_type].addColoredTab(image_widget, tab_name, col)
+
+                # Register pending load for uncached images
+                if output_image not in self.images_cache:
+                    tab_index = self.image_tabs[test_type].count() - 1
+                    self._pending_image_loads[(test_type, tab_index)] = {
+                        'output_image': output_image,
+                        'scroll_x': scroll_x,
+                        'scroll_y': scroll_y,
+                    }
 
         # Add tabs to the image tab widget
         for test_type, tab in self.image_tabs.items():
@@ -2619,10 +2749,39 @@ class MyWindow(QtWidgets.QMainWindow):
                 else:
                     self.image_tabs[test_type].setCurrentIndex(current_tab_indices[test_type])
 
-        # Connect signals to synchronize week tabs across test types
+        # Connect signals for lazy loading and tab sync
         for test_type in self.image_tabs:
             if self.image_tabs[test_type]:
-                self.image_tabs[test_type].currentChanged.connect(self.sync_week_tabs)
+                tt = test_type  # capture for lambda
+                self.image_tabs[test_type].currentChanged.connect(
+                    lambda index, t=tt: self._on_image_tab_changed(t, index))
+
+        # Ensure outer image tab changes also trigger lazy loading for the newly visible test type
+        try:
+            self.image_tab_widget.currentChanged.disconnect(self._on_outer_image_tab_changed)
+        except TypeError:
+            pass
+        self.image_tab_widget.currentChanged.connect(self._on_outer_image_tab_changed)
+
+        # Eagerly load the currently visible tab for each test type
+        for test_type in self.image_tabs:
+            if self.image_tabs[test_type] and self.image_tabs[test_type].count() > 0:
+                self._load_image_for_tab(test_type, self.image_tabs[test_type].currentIndex())
+
+    def _on_outer_image_tab_changed(self, index):
+        """When the outer image_tab_widget (Scalar/Vector/XPU) changes, ensure
+        the current week tab for the newly visible test type is loaded."""
+        if index < 0:
+            return
+        outer_widget = self.image_tab_widget.widget(index)
+        if outer_widget is None:
+            return
+        # Find which test_type this outer widget corresponds to
+        for test_type, tab_widget in self.image_tabs.items():
+            if tab_widget is outer_widget:
+                if tab_widget.count() > 0 and tab_widget.currentIndex() >= 0:
+                    self._load_image_for_tab(test_type, tab_widget.currentIndex())
+                break
 
     def show_selected_images(self):
         cmd = ['iv']
